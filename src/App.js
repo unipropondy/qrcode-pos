@@ -3,8 +3,6 @@ import React, { useState, useEffect } from "react";
 import "./App.css";
 import { BASE_URL } from "./Configs/api";
 
-
-
 function App() {
 
    const API = `${BASE_URL}/api`;
@@ -19,6 +17,8 @@ const [dishes, setDishes] = useState([]);
 const [activeCategory, setActiveCategory] = useState(null);
 const [activeGroup, setActiveGroup] = useState(null);
 const [tableNo, setTableNo] = useState("");
+
+const [currentOrderId, setCurrentOrderId] = useState(null);
 
   // Modal states
   const [showModifier, setShowModifier] = useState(false);
@@ -40,11 +40,22 @@ useEffect(() => {
 
   const table = params.get("table");
 
-  if (table) {
-    setTableNo(table);
-  }
+ if (table) {
+
+  setTableNo(table);
+
+  loadCart(table);
+}
 
 }, []);
+
+useEffect(() => {
+
+  if (!tableNo) return;
+
+  saveCartToBackend();
+
+}, [cart]);
 
 const loadKitchens = async () => {
   try {
@@ -152,21 +163,28 @@ const addToCartSimple = async (dish) => {
     // new item
     return [
       ...prev,
-      {
+          {
         ...dish,
+        cartId: crypto.randomUUID(),
+
         qty: 1,
+
         selectedMods: [],
+
         finalPrice: Number(dish.Price || 0),
-      },
+      }
     ];
   });
 
 };
 
-const increaseQty = (dishId) => {
+const increaseQty = (cartId) => {
+
   setCart((prev) =>
+
     prev.map((item) =>
-      (item.DishId || item.id) === dishId
+
+      item.cartId === cartId
         ? {
             ...item,
             qty: (item.qty || 1) + 1,
@@ -176,19 +194,177 @@ const increaseQty = (dishId) => {
   );
 };
 
-const decreaseQty = (dishId) => {
+const decreaseQty = (cartId) => {
+
   setCart((prev) =>
+
     prev
       .map((item) =>
-        (item.DishId || item.id) === dishId
+
+        item.cartId === cartId
           ? {
               ...item,
               qty: (item.qty || 1) - 1,
             }
           : item
       )
+
       .filter((item) => item.qty > 0)
   );
+};
+
+const saveCartToBackend = async () => {
+
+  try {
+
+    const payload = {
+
+      tableId: tableNo,
+
+      orderId: currentOrderId,
+
+      userId: "00000000-0000-0000-0000-000000000000",
+
+      items: cart.map((item) => ({
+
+        id: item.DishId || item.id,
+
+        name: item.Name || item.name,
+
+        qty: item.qty || 1,
+
+        price: item.Price || item.price || 0,
+
+        modifiers: item.selectedMods || [],
+
+        note: item.note || "",
+
+        status: "NEW",
+      })),
+    };
+
+    const res = await fetch(`${API}/order/save-cart`, {
+
+      method: "POST",
+
+      headers: {
+        "Content-Type": "application/json",
+      },
+
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+
+    console.log("SAVE CART:", data);
+
+    if (data.orderId) {
+      setCurrentOrderId(data.orderId);
+    }
+
+  } catch (err) {
+
+    console.log("SAVE CART ERROR:", err);
+  }
+};
+
+const placeOrder = async () => {
+
+  try {
+
+    const payload = {
+
+      tableId: tableNo,
+
+      orderId: currentOrderId,
+
+      userId: "00000000-0000-0000-0000-000000000000",
+
+      items: cart.map((item) => ({
+
+        id: item.DishId || item.id,
+
+        name: item.Name || item.name,
+
+        qty: item.qty || 1,
+
+        price: item.Price || item.price || 0,
+
+        modifiers: item.selectedMods || [],
+
+        note: item.note || "",
+
+        status: "SENT",
+      })),
+    };
+
+    const res = await fetch(`${API}/order/send`, {
+
+      method: "POST",
+
+      headers: {
+        "Content-Type": "application/json",
+      },
+
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+
+    console.log("ORDER SEND:", data);
+
+    if (data.success) {
+
+      alert("Order Placed Successfully");
+
+      if (data.orderId) {
+        setCurrentOrderId(data.orderId);
+      }
+
+    } else {
+
+      alert(data.error || "Failed to place order");
+    }
+
+  } catch (err) {
+
+    console.log("PLACE ORDER ERROR:", err);
+
+    alert("Server Error");
+  }
+};
+const loadCart = async (tableId) => {
+
+  try {
+
+    const res = await fetch(`${API}/order/cart/${tableId}`);
+
+    const data = await res.json();
+
+    console.log("LOAD CART:", data);
+
+    if (data.items) {
+
+      const formatted = data.items.map((item) => ({
+
+        ...item,
+
+        cartId: crypto.randomUUID(),
+
+        selectedMods: item.modifiers || [],
+      }));
+
+      setCart(formatted);
+    }
+
+    if (data.currentOrderId) {
+      setCurrentOrderId(data.currentOrderId);
+    }
+
+  } catch (err) {
+
+    console.log("LOAD CART ERROR:", err);
+  }
 };
   const toggleModifier = (mod) => {
     if (mod.ModifierName.toUpperCase() === "OPEN") {
@@ -453,7 +629,7 @@ const decreaseQty = (dishId) => {
         <button
           className="qty-btn"
           onClick={() =>
-            decreaseQty(item.DishId || item.id)
+           decreaseQty(item.cartId)
           }
         >
           -
@@ -466,7 +642,7 @@ const decreaseQty = (dishId) => {
         <button
           className="qty-btn"
           onClick={() =>
-            increaseQty(item.DishId || item.id)
+            increaseQty(item.cartId)
           }
         >
           +
@@ -502,8 +678,13 @@ const decreaseQty = (dishId) => {
                     )
                     .toFixed(2)}</span>
                 </div>
-                <button className="checkout-btn">Order Placed</button>
-              </div>
+               <button 
+            className="checkout-btn"
+            onClick={placeOrder}
+          >
+            Order Placed
+          </button>
+         </div>
             </div>
           )}
         </div>
