@@ -317,17 +317,15 @@ const placeOrder = async () => {
 
     console.log("ORDER SEND:", data);
 
-    if (data.success) {
-
-      alert("Order Placed Successfully");
-
-      if (data.orderId) {
-        setCurrentOrderId(data.orderId);
-      }
-
-    } else {
-
-      alert(data.error || "Failed to place order");
+    if (data.success) { 
+      if (data.orderId) { setCurrentOrderId(data.orderId); } 
+      const totalAmount = 
+      cart .reduce( (s, i) => s + ( Number(i.Price || i.price || 0) * Number(i.qty || 1) ), 0 ) .toFixed(2); 
+      window.location.href = 
+      `https://buzz.fnbees.com/payment?orderId=${data.orderId}&table=${tableNo}&amount=${totalAmount}`; 
+    } 
+    else { 
+      alert(data.error || "Failed to place order"); 
     }
 
   } catch (err) {
