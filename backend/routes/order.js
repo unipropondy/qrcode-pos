@@ -382,7 +382,13 @@ router.post("/save-cart", async (req, res) => {
     // await transaction.begin();
     try {
       if (hasItems) {
-        await syncToProfessionalTables(transaction, cleanId, currentOrderId, items || [], userId);
+       await syncToProfessionalTables(
+            { request: () => pool.request() },
+            cleanId,
+            currentOrderId,
+            items || [],
+            userId
+          );
       }
       
       // 🚀 CRITICAL: Update TableMaster INSIDE the same transaction 
