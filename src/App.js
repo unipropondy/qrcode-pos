@@ -21,6 +21,10 @@ const [tableId, setTableId] = useState("");
 
 const [currentOrderId, setCurrentOrderId] = useState(null);
 
+const [showPaymentPopup, setShowPaymentPopup] = useState(false);
+
+
+
   // Modal states
   const [showModifier, setShowModifier] = useState(false);
   const [selectedDish, setSelectedDish] = useState(null);
@@ -321,8 +325,7 @@ const placeOrder = async () => {
       if (data.orderId) { setCurrentOrderId(data.orderId); } 
       const totalAmount = 
       cart .reduce( (s, i) => s + ( Number(i.Price || i.price || 0) * Number(i.qty || 1) ), 0 ) .toFixed(2); 
-      window.location.href = 
-      `https://buzz.fnbees.com/payment?orderId=${data.orderId}&table=${tableNo}&amount=${totalAmount}`; 
+      setShowPaymentPopup(true);
     } 
     else { 
       alert(data.error || "Failed to place order"); 
@@ -509,6 +512,11 @@ const loadCart = async (tableId) => {
       <line x1="14" y1="1" x2="14" y2="4"></line>
     </svg>
   );
+
+   const totalAmount 
+   = cart .reduce( (s, i) => s + 
+          ( Number(i.Price || i.price || 0) * 
+          Number(i.qty || 1) ), 0 ) .toFixed(2);
 
   return (
     <div className="pos-app">
@@ -800,10 +808,19 @@ const loadCart = async (tableId) => {
                 </div>
               </div>
             </div>
-          )}
+        )}
         </div>
+        
       )}
-    </div>
+     {showPaymentPopup && ( 
+      <div className="modal-overlay"> 
+      <div className="payment-popup"> 
+        <h2 className="payment-title"> How would you like to pay? </h2> <p className="payment-subtitle"> These are the available payment methods </p> <button className="payment-btn" onClick={() => { alert("Online Payment"); }} > Pay Online </button> <div className="payment-or"> OR </div> <button className="payment-btn" onClick={() => { alert("Pay At Cashier"); }} > Pay At Cashier Now </button>  
+     </div>
+      </div> 
+     )} 
+     </div>
+   
   );
 }
 
