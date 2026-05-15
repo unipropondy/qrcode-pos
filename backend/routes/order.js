@@ -386,7 +386,8 @@ router.post("/save-cart", async (req, res) => {
       }
       
       // 🚀 CRITICAL: Update TableMaster INSIDE the same transaction 
-      await transaction.request()
+      // await transaction.request()
+      await pool.request()
         .input("tid", sql.UniqueIdentifier, cleanId)
         .input("oid", sql.NVarChar(50), currentOrderId)
         .query(`
@@ -399,7 +400,7 @@ router.post("/save-cart", async (req, res) => {
           WHERE TableId = @tid
         `);
 
-      await transaction.commit();
+      // await transaction.commit();
       
       res.json({ success: true, orderId: currentOrderId });
       
@@ -411,7 +412,7 @@ router.post("/save-cart", async (req, res) => {
 
       syncTableStatus(req, cleanId).catch(() => {});
     } catch (e) { 
-      if (transaction._isStarted) await transaction.rollback(); 
+      // if (transaction._isStarted) await transaction.rollback(); 
       console.error("❌ SaveCart SQL Error:", e.message);
       res.status(500).json({ error: "DB_ERROR: " + e.message }); 
     }

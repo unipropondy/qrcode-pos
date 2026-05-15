@@ -17,6 +17,7 @@ const [dishes, setDishes] = useState([]);
 const [activeCategory, setActiveCategory] = useState(null);
 const [activeGroup, setActiveGroup] = useState(null);
 const [tableNo, setTableNo] = useState("");
+const [tableId, setTableId] = useState("");
 
 const [currentOrderId, setCurrentOrderId] = useState(null);
 
@@ -38,13 +39,16 @@ useEffect(() => {
 
   const params = new URLSearchParams(window.location.search);
 
-  const table = params.get("table");
+ const table = params.get("table");
+const tid = params.get("tableId");
 
- if (table) {
-
+if (table) {
   setTableNo(table);
+}
 
-  loadCart(table);
+if (tid) {
+  setTableId(tid);
+  loadCart(tid);
 }
 
 }, []);
@@ -219,7 +223,7 @@ const saveCartToBackend = async () => {
 
     const payload = {
 
-      tableId: tableNo,
+      tableId: tableId,
 
       orderId: currentOrderId,
 
@@ -274,7 +278,7 @@ const placeOrder = async () => {
 
     const payload = {
 
-      tableId: tableNo,
+      tableId: tableId,
 
       orderId: currentOrderId,
 
