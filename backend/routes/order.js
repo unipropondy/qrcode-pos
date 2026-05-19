@@ -432,43 +432,69 @@ router.post("/save-cart", async (req, res) => {
     
     // 🚀 UNIFIED ID: Only generate a professional ID if we actually have items to save
     // 🚀 UNIFIED ID: Use existing orderId if available, even for empty carts
-    let currentOrderId = orderId;
-    const hasItems = items && items.length > 0;
+   let currentOrderId = orderId || "PENDING";
+const hasItems = items && items.length > 0;
 
-    if (hasItems && (!currentOrderId || currentOrderId === "NEW" || currentOrderId === "#NEW" || currentOrderId === "PENDING" || currentOrderId.length < 10)) {
-      currentOrderId = await getOrGenerateOrderId(req, cleanId);
-    } else if (!hasItems) {
-      // 🚀 NUCLEAR CLEAR: If saving an empty cart, we should clear EVERY open order for this table
-      // and reset the table status completely to prevent ghosts.
-      console.log(`[TRACE] [${now}] [SAVE-CART] NUCLEAR CLEAR for Table ${cleanId}`);
-      await pool.request()
-        .input("tid", sql.VarChar(50), cleanId)
-        .query(`
-          DECLARE @TableNo VARCHAR(20);
-          SELECT TOP 1 @TableNo = TableNumber FROM TableMaster WHERE TableId = @tid;
+// 🚀 save-cart la real order generate panna koodathu
+// send API la mattum generate aaganum
+if (!currentOrderId) {
+  currentOrderId = "PENDING";
+}
 
-          IF @TableNo IS NOT NULL
-          BEGIN
-            -- Delete all unsent items for ALL open orders on this table
-            DELETE FROM RestaurantmodifierdetailCur WHERE OrderDetailId IN (
-              SELECT OrderDetailId FROM RestaurantOrderDetailCur WHERE OrderId IN (
-                SELECT OrderId FROM RestaurantOrderCur WHERE Tableno = @TableNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
-              ) AND StatusCode = 1
-            );
-            DELETE FROM RestaurantOrderDetailCur WHERE OrderId IN (
-              SELECT OrderId FROM RestaurantOrderCur WHERE Tableno = @TableNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
-            ) AND StatusCode = 1;
+if (!hasItems) {
+  // 🚀 NUCLEAR CLEAR: If saving an empty cart, we should clear EVERY open order for this table
+  console.log(`[TRACE] [${now}] [SAVE-CART] NUCLEAR CLEAR for Table ${cleanId}`);
 
-            -- Force close all orders
-            UPDATE RestaurantOrderCur SET isOrderClosed = 1, ModifiedOn = GETDATE() 
-            WHERE Tableno = @TableNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL);
-          END
+  await pool.request()
+    .input("tid", sql.VarChar(50), cleanId)
+    .query(`
+      DECLARE @TableNo VARCHAR(20);
 
-          -- Reset table status
-          UPDATE TableMaster SET Status = 0, CurrentOrderId = NULL, StartTime = NULL WHERE TableId = @tid;
-        `);
-      currentOrderId = null;
-    }
+      SELECT TOP 1 @TableNo = TableNumber
+      FROM TableMaster
+      WHERE TableId = @tid;
+
+      IF @TableNo IS NOT NULL
+      BEGIN
+        DELETE FROM RestaurantmodifierdetailCur
+        WHERE OrderDetailId IN (
+          SELECT OrderDetailId
+          FROM RestaurantOrderDetailCur
+          WHERE OrderId IN (
+            SELECT OrderId
+            FROM RestaurantOrderCur
+            WHERE Tableno = @TableNo
+            AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+          )
+          AND StatusCode = 1
+        );
+
+        DELETE FROM RestaurantOrderDetailCur
+        WHERE OrderId IN (
+          SELECT OrderId
+          FROM RestaurantOrderCur
+          WHERE Tableno = @TableNo
+          AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+        )
+        AND StatusCode = 1;
+
+        UPDATE RestaurantOrderCur
+        SET isOrderClosed = 1,
+            ModifiedOn = GETDATE(),
+            entry_status = 'c'
+        WHERE Tableno = @TableNo
+        AND (isOrderClosed = 0 OR isOrderClosed IS NULL);
+      END
+
+      UPDATE TableMaster
+      SET Status = 0,
+          CurrentOrderId = NULL,
+          StartTime = NULL
+      WHERE TableId = @tid;
+    `);
+
+  currentOrderId = null;
+}
 
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
