@@ -386,6 +386,7 @@ async function syncTableStatus(req, tableId) {
         WHEN @count > 0 THEN 1 
         ELSE 0 
     END, 
+       entry_status = 'q',
         TotalAmount = @total, 
         CurrentOrderId = @ActualOrderNo,
         StartTime = CASE WHEN @count > 0 AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
@@ -468,6 +469,7 @@ router.post("/save-cart", async (req, res) => {
           UPDATE TableMaster 
           SET Status = CASE WHEN @oid IS NOT NULL THEN 1 ELSE 0 END, 
               CurrentOrderId = @oid,
+               entry_status = 'q',
               StartTime = CASE WHEN @oid IS NOT NULL AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
                                WHEN @oid IS NULL THEN NULL 
                                ELSE StartTime END
@@ -845,6 +847,7 @@ router.post("/hold", async (req, res) => {
       .query(`
         UPDATE TableMaster 
         SET Status = 3, 
+         entry_status = 'q',
             ModifiedOn = GETDATE() 
         WHERE TableId = @tid
       `);
@@ -868,11 +871,11 @@ router.post("/checkout", async (req, res) => {
       .input("tid", sql.UniqueIdentifier, cleanId)
       .query(`
         -- 1. Update Table Status to Checkout (2)
-        UPDATE TableMaster SET Status = 2, ModifiedOn = GETDATE() WHERE TableId = @tid;
+        UPDATE TableMaster SET Status = 2,  entry_status = 'q', ModifiedOn = GETDATE() WHERE TableId = @tid;
 
         -- 2. Mark all active items for this table as SERVED (4) so they leave KDS
         UPDATE d
-        SET d.StatusCode = 4, d.ModifiedOn = GETDATE()
+        SET d.StatusCode = 4, d.ModifiedOn = GETDATE(), entry_status = 'q',
         FROM RestaurantOrderDetailCur d
         JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
         JOIN TableMaster tm ON LTRIM(RTRIM(h.Tableno)) = LTRIM(RTRIM(tm.TableNumber))
