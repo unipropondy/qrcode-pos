@@ -255,7 +255,59 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
   String(noteInfo.value || "").substring(0, 100)
 )
         .input("isTakeaway", sql.Bit, takeawayInfo.value ? 1 : 0)
-        .query("INSERT INTO RestaurantOrderDetailCur (OrderDetailId, OrderId, DishId, Description, DishName, Quantity, PricePerUnit, ActualAmount, TotalDetailLineAmount, StatusCode, CreatedBy, CreatedOn, ModifiersJSON, OrderNumber, Remarks, isTakeAway, BusinessUnitId, OrderDateTime) VALUES (@detailId, @orderId, @dishId, @dishName, @dishName, @qty, @cost, @cost * @qty, @cost * @qty, @statusCode, @userId, GETDATE(), @mods, @orderNo, @note, @isTakeaway, @bizId, GETDATE())");
+        .input("isProcessed", sql.Bit, 0)
+        .input("isReady", sql.Bit, 0)
+        .input("isDelivered", sql.Bit, 0)
+        .query(`
+  INSERT INTO RestaurantOrderDetailCur
+  (
+    OrderDetailId,
+    OrderId,
+    DishId,
+    Description,
+    DishName,
+    Quantity,
+    PricePerUnit,
+    ActualAmount,
+    TotalDetailLineAmount,
+    StatusCode,
+    CreatedBy,
+    CreatedOn,
+    ModifiersJSON,
+    OrderNumber,
+    Remarks,
+    isTakeAway,
+    BusinessUnitId,
+    OrderDateTime,
+    isProcessed,
+    isReady,
+    isDelivered
+  )
+  VALUES
+  (
+    @detailId,
+    @orderId,
+    @dishId,
+    @dishName,
+    @dishName,
+    @qty,
+    @cost,
+    @cost * @qty,
+    @cost * @qty,
+    @statusCode,
+    @userId,
+    GETDATE(),
+    @mods,
+    @orderNo,
+    @note,
+    @isTakeaway,
+    @bizId,
+    GETDATE(),
+    0,
+    0,
+    0
+  )
+`);
     }
 
     // 🚀 Kitchen Compatibility
