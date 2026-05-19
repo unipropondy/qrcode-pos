@@ -504,18 +504,31 @@ if (!hasItems) {
       await syncToProfessionalTables(transaction, cleanId, currentOrderId, items || [], userId);
       
       // 🚀 CRITICAL: Update TableMaster INSIDE the same transaction 
-      await transaction.request()
-        .input("tid", sql.VarChar(50), cleanId)
-        .input("oid", sql.NVarChar(50), currentOrderId)
-        .query(`
-          UPDATE TableMaster 
-          SET Status = CASE WHEN @oid IS NOT NULL THEN 1 ELSE 0 END, 
-              CurrentOrderId = @oid,
-              StartTime = CASE WHEN @oid IS NOT NULL AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
-                               WHEN @oid IS NULL THEN NULL 
-                               ELSE StartTime END
-          WHERE TableId = @tid
-        `);
+     await transaction.request()
+  .input("tid", sql.VarChar(50), cleanId)
+  .input("oid", sql.NVarChar(50), currentOrderId)
+  .input("itemCount", sql.Int, items?.length || 0)
+  .query(`
+    UPDATE TableMaster 
+    SET Status = CASE 
+                    WHEN @itemCount > 0 THEN 1 
+                    ELSE 0 
+                 END,
+        CurrentOrderId = CASE
+                            WHEN @itemCount > 0 THEN @oid
+                            ELSE NULL
+                         END,
+        StartTime = CASE 
+                      WHEN @itemCount > 0 
+                           AND (StartTime IS NULL OR StartTime < '2000-01-01')
+                      THEN GETDATE()
+                      WHEN @itemCount = 0 
+                      THEN NULL
+                      ELSE StartTime
+                    END,
+        ModifiedOn = GETDATE()
+    WHERE TableId = @tid
+  `);
 
       await transaction.commit();
       
