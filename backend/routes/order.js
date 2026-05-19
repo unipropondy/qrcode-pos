@@ -284,7 +284,17 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
   await transaction.request()
   .input("orderId", sql.UniqueIdentifier, orderGuid)
   .input("entry_Status", sql.NVarChar(20), "q")
- .query("UPDATE RestaurantOrderCur SET TotalAmount = (SELECT ISNULL(SUM(ActualAmount), 0),entry_Status='q' FROM RestaurantOrderDetailCur WHERE OrderId = @orderId) WHERE OrderId = @orderId");
+ .query(`
+  UPDATE RestaurantOrderCur
+  SET 
+      TotalAmount = (
+          SELECT ISNULL(SUM(ActualAmount), 0)
+          FROM RestaurantOrderDetailCur
+          WHERE OrderId = @orderId
+      ),
+      entry_Status = 'q'
+  WHERE OrderId = @orderId
+`);
 }
 
 async function syncTableStatus(req, tableId) {
