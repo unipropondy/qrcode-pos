@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const router = express.Router();
 const sql = require("mssql");
 const { poolPromise } = require("../config/db");
+const { getActiveOrganization } = require("../utils/organizationHelper");
 const DEFAULT_GUID = "00000000-0000-0000-0000-000000000000";
 
 const NOTE_KEYS = ["note", "Note", "notes", "Notes", "remarks", "Remarks"];
@@ -44,29 +45,47 @@ function resolveItemTakeaway(item = {}) {
  * Get or Generate Order ID for a table
  * Returns existing ID if table is active, otherwise generates a new one.
  */
-let cachedBusinessUnitId = null;
-
 async function getOrGenerateOrderId(req, tableId) {
   const pool = await poolPromise;
- const cleanId = String(tableId)
-  .replace(/^\{|\}$/g, "")
-  .trim();
+  const cleanId = String(tableId).replace(/^\{|\}$/g, "").trim();
   if (!tableId || tableId === "undefined" || tableId === "null") return "NEW";
 
   try {
-    // 1. Instant check for existing ID
+    // 1. GHOST CLEANUP: Force close any stale open orders for this table first
+    // 🛡️ Fail-safe: Wrap in nested try to prevent crashing if DB is busy
+    try {
+      await pool.request()
+        .input("tid", sql.UniqueIdentifier, cleanId)
+        .query(`
+          DECLARE @TableNo VARCHAR(20), @CurrentOID NVARCHAR(50);
+          SELECT @TableNo = TableNumber, @CurrentOID = CurrentOrderId FROM TableMaster WHERE TableId = @tid;
+
+          IF @TableNo IS NOT NULL
+          BEGIN
+            UPDATE RestaurantOrderCur 
+            SET isOrderClosed = 1, ModifiedOn = GETDATE() 
+            WHERE Tableno = @TableNo 
+            AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+            AND (OrderNumber <> @CurrentOID OR @CurrentOID IS NULL);
+          END
+        `);
+    } catch (cleanupErr) {
+      console.warn("⚠️ [Cart] Ghost cleanup non-critical failure:", cleanupErr.message);
+    }
+
+    // 2. Instant check for existing ID
     const quickCheck = await pool.request()
-     .input("tid", sql.UniqueIdentifier, cleanId)
+      .input("tid", sql.UniqueIdentifier, cleanId)
       .query("SELECT CurrentOrderId FROM TableMaster WHERE TableId = @tid");
     
     let existingId = quickCheck.recordset[0]?.CurrentOrderId;
-    if (existingId && existingId !== "NEW" && existingId !== "#NEW" && !existingId.startsWith("TEMP-") && existingId.length > 5) return existingId;
-
-    // 2. Optimized Business Unit ID Retrieval (Cached)
-    if (!cachedBusinessUnitId) {
-      const bizRow = await pool.request().query("SELECT TOP 1 BusinessUnitId FROM [dbo].[RestaurantOrderCur] WHERE BusinessUnitId IS NOT NULL AND BusinessUnitId <> '00000000-0000-0000-0000-000000000000'");
-      cachedBusinessUnitId = bizRow.recordset.length > 0 ? bizRow.recordset[0].BusinessUnitId : DEFAULT_GUID;
+    if (existingId && existingId !== "NEW" && existingId !== "#NEW" && !existingId.startsWith("TEMP-") && existingId.length > 5) {
+      console.log(`✅ [Cart] Reusing existing OrderID: ${existingId}`);
+      return existingId;
     }
+
+    const activeOrg = await getActiveOrganization();
+    const currentBizId = activeOrg.businessUnitId;
 
     const istDate = new Date(new Date().getTime() + (5.5 * 60 * 60 * 1000));
     const todayStr = istDate.toISOString().split('T')[0];
@@ -76,7 +95,7 @@ async function getOrGenerateOrderId(req, tableId) {
     
     // 3. ATOMIC ATTEMPT: Use MERGE or Transaction for Sequence
     const seqResult = await pool.request()
-      .input("RestId", sql.UniqueIdentifier, String(cachedBusinessUnitId))
+      .input("RestId", sql.UniqueIdentifier, String(currentBizId))
       .input("Today", sql.Date, todayStr)
       .query(`
         BEGIN TRANSACTION;
@@ -95,7 +114,7 @@ async function getOrGenerateOrderId(req, tableId) {
     
     // 4. Atomic Update of Table Status
     await pool.request()
-    .input("tid", sql.UniqueIdentifier, cleanId)
+      .input("tid", sql.VarChar(50), cleanId)
       .input("oid", sql.NVarChar(50), displayOrderId)
       .query("UPDATE TableMaster SET CurrentOrderId = @oid, StartTime = ISNULL(StartTime, GETDATE()) WHERE TableId = @tid");
     
@@ -120,183 +139,209 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
   const cleanTableId = isTakeaway ? null : String(tableId).replace(/^\{|\}$/g, "").trim();
   const cleanOrderNo = String(displayOrderId || "PENDING").replace(/^\{|\}$/g, "").trim();
 
-  let actualTableNo = "TAKEAWAY";
-  if (cleanTableId) {
-    const tCheck = await transaction.request()
-    .input("tid", sql.VarChar(50), cleanTableId)
-    .query("SELECT TableNumber FROM TableMaster WHERE TableId = @tid");
-    if (tCheck.recordset.length > 0) actualTableNo = tCheck.recordset[0].TableNumber;
-  }
+  const activeOrg = await getActiveOrganization();
+  const bizId = activeOrg.businessUnitId;
 
-  let bizId = DEFAULT_GUID;
-  const bizCheck = await transaction.request().query("SELECT TOP 1 BusinessUnitId FROM [dbo].[RestaurantOrderCur] WHERE BusinessUnitId IS NOT NULL AND BusinessUnitId <> '00000000-0000-0000-0000-000000000000'");
-  if (bizCheck.recordset.length > 0) bizId = bizCheck.recordset[0].BusinessUnitId;
-  if (!bizId) bizId = DEFAULT_GUID;
+  // 🚀 OPTIMIZATION 1: Combined Initial Lookups (TableNo, BizId, OrderHeader)
+  const initRes = await transaction.request()
+    .input("orderNo", sql.NVarChar(50), cleanOrderNo)
+    .input("tableId", sql.VarChar(50), cleanTableId)
+    .query(`
+      DECLARE @ActualTableNo VARCHAR(20) = 'TAKEAWAY';
+      DECLARE @Section INT = 4;
+      IF @tableId IS NOT NULL 
+        SELECT TOP 1 @ActualTableNo = TableNumber, @Section = ISNULL(DiningSection, 4) FROM TableMaster WHERE TableId = @tableId;
 
+      DECLARE @PriorityCode INT = NULL;
+      IF @Section = 1 SET @PriorityCode = 1
+      ELSE IF @Section = 2 SET @PriorityCode = 2
+      ELSE IF @Section = 3 SET @PriorityCode = 3
+      ELSE IF @Section = 4 SET @PriorityCode = 4
+
+      -- 🛡️ SHIELD: Find the DEFINITIVE active order for this table/number
+      SELECT TOP 1 OrderId, Tableno, BusinessUnitId, OrderNumber
+      FROM RestaurantOrderCur WITH (UPDLOCK)
+      WHERE OrderNumber = @orderNo 
+      OR (Tableno = @ActualTableNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL)) 
+      ORDER BY 
+        CASE WHEN OrderNumber = @orderNo THEN 0 ELSE 1 END,
+        CreatedOn DESC;
+      
+      SELECT @ActualTableNo as ActualTableNo, @PriorityCode as PriorityCode;
+    `);
+
+  const header = initRes.recordsets[0][0];
+  const actualTableNo = initRes.recordsets[1][0]?.ActualTableNo || "TAKEAWAY";
+  const priorityCode = initRes.recordsets[1][0]?.PriorityCode || 4;
+
+  let orderGuid;
   let finalUserId = userId;
   if (!finalUserId || finalUserId.length < 10) finalUserId = DEFAULT_GUID;
 
-  let orderGuid;
-  // 🛡️ STRICT LOOKUP: Prioritize OrderNumber first, then most recent active table order
-  const headerCheck = await transaction.request()
-    .input("orderNo", sql.NVarChar(50), cleanOrderNo)
-    .input("tableNo", sql.VarChar(20), actualTableNo)
-    .query(`
-      SELECT TOP 1 OrderId FROM RestaurantOrderCur WITH (UPDLOCK)
-      WHERE OrderNumber = @orderNo 
-      OR (LTRIM(RTRIM(Tableno)) = LTRIM(RTRIM(@tableNo)) AND (isOrderClosed = 0 OR isOrderClosed IS NULL)) 
-      ORDER BY CreatedOn DESC
-    `);
-  
-  if (headerCheck.recordset.length > 0) {
-    orderGuid = headerCheck.recordset[0].OrderId;
-    // Ensure the OrderNumber is synced to the professional one if it was a draft (TEMP-, PENDING, etc)
+  if (header) {
+    orderGuid = header.OrderId;
     await transaction.request()
       .input("orderId", sql.UniqueIdentifier, orderGuid)
       .input("orderNo", sql.NVarChar(50), cleanOrderNo)
+      .input("priority", sql.Int, priorityCode)
       .query(`
         UPDATE RestaurantOrderCur 
-        SET OrderNumber = @orderNo 
+        SET PriorityCode = ISNULL(PriorityCode, @priority),
+            OrderNumber = CASE 
+                            WHEN OrderNumber IS NULL OR OrderNumber = '' OR OrderNumber = 'PENDING' OR OrderNumber = 'NEW' OR OrderNumber = '#NEW' OR OrderNumber LIKE 'TEMP-%' THEN @orderNo 
+                            ELSE OrderNumber 
+                          END
         WHERE OrderId = @orderId 
-        AND (OrderNumber IS NULL OR OrderNumber = '' OR OrderNumber = 'PENDING' OR OrderNumber = 'NEW' OR OrderNumber = '#NEW' OR OrderNumber LIKE 'TEMP-%')
       `);
   } else {
     orderGuid = require("crypto").randomUUID();
-    await transaction.request().input("orderId", sql.UniqueIdentifier, orderGuid).input("orderNo", sql.NVarChar(50), cleanOrderNo).input("tableNo", sql.VarChar(20), actualTableNo).input(
-  "userId",
-  sql.UniqueIdentifier,
-  toGuidOrNull(finalUserId) || DEFAULT_GUID
-).input("bizId", sql.UniqueIdentifier, bizId).query("INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId) VALUES (@orderId, @orderNo, GETDATE(), LTRIM(RTRIM(@tableNo)), 1, @userId, GETDATE(), 0, @bizId)");
+    await transaction.request()
+      .input("orderId", sql.UniqueIdentifier, orderGuid)
+      .input("orderNo", sql.NVarChar(50), cleanOrderNo)
+      .input("tableNo", sql.VarChar(20), actualTableNo)
+      .input("userId", sql.UniqueIdentifier, finalUserId)
+      .input("bizId", sql.UniqueIdentifier, bizId)
+      .input("priority", sql.Int, priorityCode)
+      .query("INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId, PriorityCode) VALUES (@orderId, @orderNo, GETDATE(), @tableNo, 1, @userId, GETDATE(), 0, @bizId, @priority)");
   }
-  for (const item of items) {
-    const cleanProdId = String(item.id || item.ProductId || DEFAULT_GUID).replace(/^\{|\}$/g, "").trim();
-    let finalProdId = cleanProdId;
-    if (finalProdId.length < 10) finalProdId = DEFAULT_GUID;
 
-    let lineItemId = item.lineItemId || item.ItemId;
-    const statusCodes = { 'NEW': 1, 'SENT': 2, 'READY': 3, 'SERVED': 4, 'HOLD': 5, 'VOIDED': 0 };
+  // 🛡️ GHOST SHIELD: Force-close any OTHER open orders for the same table number to prevent "popping" items.
+  if (actualTableNo && actualTableNo !== 'undefined') {
+    await transaction.request()
+      .input("orderGuid", sql.UniqueIdentifier, orderGuid)
+      .input("tableNo", sql.VarChar(20), actualTableNo)
+      .query(`
+        UPDATE RestaurantOrderCur 
+        SET isOrderClosed = 1, ModifiedOn = GETDATE() 
+        WHERE Tableno = @tableNo 
+        AND (isOrderClosed = 0 OR isOrderClosed IS NULL) 
+        AND OrderId <> @orderGuid
+      `);
+  }
+
+  // 🚀 OPTIMIZATION 2: Batch Item Processing
+  // Instead of per-item queries, we build a single SQL command with multiple statements
+  const itemRequest = transaction.request();
+  itemRequest.input("orderId", sql.UniqueIdentifier, orderGuid);
+  itemRequest.input("userId", sql.UniqueIdentifier, finalUserId);
+  itemRequest.input("bizId", sql.UniqueIdentifier, bizId);
+  itemRequest.input("orderNo", sql.NVarChar(100), cleanOrderNo);
+
+  let batchSql = "";
+  const statusCodes = { 'NEW': 1, 'SENT': 2, 'READY': 3, 'SERVED': 4, 'HOLD': 5, 'VOIDED': 0 };
+
+  items.forEach((item, idx) => {
+    const cleanProdId = String(item.id || item.ProductId || DEFAULT_GUID).replace(/^\{|\}$/g, "").trim();
+    const finalProdId = cleanProdId.length < 10 ? DEFAULT_GUID : cleanProdId;
+    const lineItemId = (item.lineItemId && item.lineItemId.length > 10) ? item.lineItemId : require("crypto").randomUUID();
     const currentStatusCode = statusCodes[item.status || item.Status] || 2;
-    const dishName = String(
-  item.name || item.ProductName || "Dish"
-).substring(0, 50);
+    const dishName = (item.name || item.ProductName || 'Dish').substring(0, 200);
     const unitPrice = item.price || item.Cost || 0;
     const noteInfo = resolveItemNote(item);
     const takeawayInfo = resolveItemTakeaway(item);
-    const modsJSON = JSON.stringify(item.modifiers || []).substring(0, 500);
-
-    // 🕵️‍♂️ SMART-MATCH: If ID is missing, try to find an existing item with same Dish & Modifiers
-    if (!lineItemId || lineItemId.length < 10) {
-      const matchCheck = await transaction.request()
-        .input("orderId", sql.UniqueIdentifier, orderGuid)
-        .input("dishId", sql.UniqueIdentifier, finalProdId)
-        .input("mods", sql.NVarChar(sql.MAX), modsJSON)
-        .query("SELECT TOP 1 OrderDetailId FROM RestaurantOrderDetailCur WHERE OrderId = @orderId AND DishId = @dishId AND CAST(ModifiersJSON AS NVARCHAR(MAX)) = LTRIM(RTRIM(@mods)) AND StatusCode <> 0 ORDER BY CreatedOn DESC");
-      
-      if (matchCheck.recordset.length > 0) {
-        lineItemId = matchCheck.recordset[0].OrderDetailId;
-      } else {
-        lineItemId = require("crypto").randomUUID();
-      }
-    }
-
-    const detailCheck = await transaction.request().input("detailId", sql.UniqueIdentifier, lineItemId).query("SELECT OrderDetailId FROM RestaurantOrderDetailCur WHERE OrderDetailId = @detailId");
-    if (detailCheck.recordset.length > 0) {
-      await transaction.request()
-        .input("detailId", sql.UniqueIdentifier, lineItemId)
-        .input("qty", sql.Int, item.qty || 1)
-        .input("cost", sql.Decimal(18, 2), unitPrice)
-        .input("statusCode", sql.Int, currentStatusCode)
-        .input(
-  "userId",
-  sql.UniqueIdentifier,
-  toGuidOrNull(finalUserId) || DEFAULT_GUID
-)
-        .input("mods", sql.NVarChar(sql.MAX), modsJSON)
-        .input(
-  "orderNo",
-  sql.NVarChar(20),
-  String(cleanOrderNo).substring(0, 20)
-)
-        .input("dishName", sql.NVarChar(200), dishName)
-        .input(
-  "note",
-  sql.NVarChar(100),
-  String(noteInfo.value || "").substring(0, 100)
-)
-        .input("isTakeaway", sql.Bit, takeawayInfo.value ? 1 : 0)
-        .query("UPDATE RestaurantOrderDetailCur SET Quantity = @qty, PricePerUnit = @cost, ActualAmount = @cost * @qty, TotalDetailLineAmount = @cost * @qty, StatusCode = CASE WHEN @statusCode = 0 THEN 0 ELSE (CASE WHEN @statusCode > StatusCode THEN @statusCode ELSE StatusCode END) END, Description = @dishName, DishName = @dishName, ModifiedBy = @userId, ModifiedOn = GETDATE(), ModifiersJSON = @mods, OrderNumber = @orderNo, Remarks = @note, isTakeAway = @isTakeaway WHERE OrderDetailId = @detailId");
-    } else {
-      await transaction.request()
-        .input("detailId", sql.UniqueIdentifier, lineItemId)
-        .input("orderId", sql.UniqueIdentifier, orderGuid)
-        .input("dishId", sql.UniqueIdentifier, finalProdId)
-        .input("qty", sql.Int, item.qty || 1)
-        .input("cost", sql.Decimal(18, 2), unitPrice)
-        .input("statusCode", sql.Int, currentStatusCode)
-        .input(
-  "userId",
-  sql.UniqueIdentifier,
-  toGuidOrNull(finalUserId) || DEFAULT_GUID
-)
-        .input("mods", sql.NVarChar(sql.MAX), modsJSON)
-       .input(
-  "orderNo",
-  sql.NVarChar(20),
-  String(cleanOrderNo).substring(0, 20)
-)
-        .input("bizId", sql.UniqueIdentifier, bizId)
-        .input("dishName", sql.NVarChar(200), dishName)
-        .input(
-  "note",
-  sql.NVarChar(100),
-  String(noteInfo.value || "").substring(0, 100)
-)
-        .input("isTakeaway", sql.Bit, takeawayInfo.value ? 1 : 0)
-        .query("INSERT INTO RestaurantOrderDetailCur (OrderDetailId, OrderId, DishId, Description, DishName, Quantity, PricePerUnit, ActualAmount, TotalDetailLineAmount, StatusCode, CreatedBy, CreatedOn, ModifiersJSON, OrderNumber, Remarks, isTakeAway, BusinessUnitId, OrderDateTime) VALUES (@detailId, @orderId, @dishId, @dishName, @dishName, @qty, @cost, @cost * @qty, @cost * @qty, @statusCode, @userId, GETDATE(), @mods, @orderNo, @note, @isTakeaway, @bizId, GETDATE())");
-    }
-
-    // 🚀 Kitchen Compatibility
-    await transaction.request().input("detailId", sql.UniqueIdentifier, lineItemId).query("DELETE FROM RestaurantmodifierdetailCur WHERE OrderDetailId = @detailId");
     const modifiers = Array.isArray(item.modifiers) ? item.modifiers : [];
-    if (modifiers.length > 0 || noteInfo.value) {
-      let modQuery = "INSERT INTO RestaurantmodifierdetailCur (OrderDetailId, OrderId, DishId, ModifierId, Quantity, Amount, ModifierName, CreatedBy, CreatedOn) VALUES ";
-      const modReq = transaction.request();
-      modReq.input("detailId", sql.UniqueIdentifier, lineItemId).input("orderId", sql.UniqueIdentifier, orderGuid).input("dishId", sql.UniqueIdentifier, finalProdId).input(
-  "userId",
-  sql.UniqueIdentifier,
-  toGuidOrNull(finalUserId) || DEFAULT_GUID
-);
-      const modItems = [...modifiers];
-      if (noteInfo.value) modItems.push({ ModifierId: '00000000-0000-0000-0000-000000000001', ModifierName: "INSTR: " + noteInfo.value, Price: 0, qty: item.qty || 1 });
-      modItems.forEach((mod, idx) => {
-        modReq.input(`mId${idx}`, sql.UniqueIdentifier, mod.ModifierId || '00000000-0000-0000-0000-000000000001');
-        modReq.input(`mQty${idx}`, sql.Int, mod.qty || 1);
-        modReq.input(`mAmt${idx}`, sql.Decimal(18, 2), mod.Price || 0);
-        modReq.input(`mName${idx}`, sql.NVarChar(800), (mod.ModifierName || "").substring(0, 800));
-        modQuery += `(@detailId, @orderId, @dishId, @mId${idx}, @mQty${idx}, @mAmt${idx}, @mName${idx}, @userId, GETDATE())${idx === modItems.length - 1 ? "" : ","}`;
+    const modsJSON = JSON.stringify(modifiers);
+
+    const p_id = `id${idx}`, p_dish = `dish${idx}`, p_qty = `qty${idx}`, p_cost = `cost${idx}`, 
+          p_status = `st${idx}`, p_name = `name${idx}`, p_note = `note${idx}`, p_mods = `mods${idx}`, 
+          p_tw = `tw${idx}`;
+
+    itemRequest.input(p_id, sql.UniqueIdentifier, lineItemId);
+    itemRequest.input(p_dish, sql.UniqueIdentifier, finalProdId);
+    itemRequest.input(p_qty, sql.Int, item.qty || 1);
+    itemRequest.input(p_cost, sql.Decimal(18, 2), unitPrice);
+    itemRequest.input(p_status, sql.Int, currentStatusCode);
+    itemRequest.input(p_name, sql.NVarChar(200), dishName);
+    itemRequest.input(p_note, sql.NVarChar(sql.MAX), noteInfo.value);
+    itemRequest.input(p_mods, sql.NVarChar(sql.MAX), modsJSON);
+    itemRequest.input(p_tw, sql.Bit, takeawayInfo.value ? 1 : 0);
+
+    batchSql += `
+      -- Process Item ${idx}
+      IF EXISTS (SELECT 1 FROM RestaurantOrderDetailCur WHERE OrderDetailId = @${p_id})
+      BEGIN
+        UPDATE RestaurantOrderDetailCur SET 
+          Quantity = @${p_qty}, PricePerUnit = @${p_cost}, ActualAmount = @${p_cost} * @${p_qty}, 
+          TotalDetailLineAmount = @${p_cost} * @${p_qty}, 
+          StatusCode = CASE WHEN @${p_status} = 0 THEN 0 ELSE (CASE WHEN @${p_status} > StatusCode THEN @${p_status} ELSE StatusCode END) END, 
+          Description = @${p_name}, DishName = @${p_name}, ModifiedBy = @userId, ModifiedOn = GETDATE(), 
+          ModifiersJSON = @${p_mods}, OrderNumber = @orderNo, Remarks = @${p_note}, isTakeAway = @${p_tw} 
+        WHERE OrderDetailId = @${p_id};
+      END
+      ELSE
+      BEGIN
+        INSERT INTO RestaurantOrderDetailCur (OrderDetailId, OrderId, DishId, Description, DishName, Quantity, PricePerUnit, ActualAmount, TotalDetailLineAmount, StatusCode, CreatedBy, CreatedOn, ModifiersJSON, OrderNumber, Remarks, isTakeAway, BusinessUnitId, OrderDateTime)
+        VALUES (@${p_id}, @orderId, @${p_dish}, @${p_name}, @${p_name}, @${p_qty}, @${p_cost}, @${p_cost} * @${p_qty}, @${p_cost} * @${p_qty}, @${p_status}, @userId, GETDATE(), @${p_mods}, @orderNo, @${p_note}, @${p_tw}, @bizId, GETDATE());
+      END
+
+      -- Sync Modifiers for Item ${idx}
+      DELETE FROM RestaurantmodifierdetailCur WHERE OrderDetailId = @${p_id};
+    `;
+
+    const modItems = [...modifiers];
+    if (noteInfo.value) modItems.push({ ModifierId: '00000000-0000-0000-0000-000000000001', ModifierName: "INSTR: " + noteInfo.value, Price: 0, qty: item.qty || 1 });
+    
+    if (modItems.length > 0) {
+      batchSql += `INSERT INTO RestaurantmodifierdetailCur (OrderDetailId, OrderId, DishId, ModifierId, Quantity, Amount, ModifierName, CreatedBy, CreatedOn) VALUES `;
+      modItems.forEach((mod, midx) => {
+        const pm_id = `mId${idx}_${midx}`, pm_qty = `mQty${idx}_${midx}`, pm_amt = `mAmt${idx}_${midx}`, pm_name = `mName${idx}_${midx}`;
+        
+        // 🛡️ SAFE GUID: Ensure we have a valid-looking GUID or use a dummy
+        const safeModId = (mod.ModifierId && mod.ModifierId.length > 30) 
+          ? mod.ModifierId 
+          : '00000000-0000-0000-0000-000000000001';
+
+        itemRequest.input(pm_id, sql.UniqueIdentifier, safeModId);
+        itemRequest.input(pm_qty, sql.Int, mod.qty || 1);
+        itemRequest.input(pm_amt, sql.Decimal(18, 2), mod.Price || 0);
+        itemRequest.input(pm_name, sql.NVarChar(800), (mod.ModifierName || "").substring(0, 800));
+        batchSql += `(@${p_id}, @orderId, @${p_dish}, @${pm_id}, @${pm_qty}, @${pm_amt}, @${pm_name}, @userId, GETDATE())${midx === modItems.length - 1 ? ";" : ","}`;
       });
-      await modReq.query(modQuery);
     }
+  });
+
+  // 🚀 OPTIMIZATION 3: Smart Removal in the same batch
+  const incomingIds = items.map(i => i.lineItemId).filter(id => !!id && id.length > 5);
+  const notInClause = incomingIds.length > 0 
+    ? `AND OrderDetailId NOT IN (${incomingIds.map(id => `'${id}'`).join(',')})` 
+    : "";
+
+  console.log(`[DB] Syncing Order ${cleanOrderNo} (${orderGuid}): Processing ${items.length} items, keeping ${incomingIds.length} IDs.`);
+
+  batchSql += `
+    -- Smart Removal: Delete unsent items that are no longer in the cart
+    DELETE FROM RestaurantmodifierdetailCur WHERE OrderDetailId IN (SELECT OrderDetailId FROM RestaurantOrderDetailCur WHERE OrderId = @orderId AND StatusCode = 1 ${notInClause});
+    DELETE FROM RestaurantOrderDetailCur WHERE OrderId = @orderId AND StatusCode = 1 ${notInClause};
+    
+    -- Smart Void: Void sent items that were removed (not common for unsent cart but for safety)
+    UPDATE RestaurantOrderDetailCur SET StatusCode = 0, ModifiedBy = @userId, ModifiedOn = GETDATE() 
+    WHERE OrderId = @orderId AND StatusCode NOT IN (0, 1) ${notInClause};
+
+    -- Final Header Total Update
+    UPDATE RestaurantOrderCur SET TotalAmount = (SELECT ISNULL(SUM(ActualAmount), 0) FROM RestaurantOrderDetailCur WHERE OrderId = @orderId AND StatusCode <> 0) WHERE OrderId = @orderId;
+  `;
+
+  if (batchSql || items.length === 0) {
+    if (items.length === 0) console.log(`[DB] CLEARING ALL UNSENT for Order ${cleanOrderNo}`);
+    await itemRequest.query(batchSql);
   }
-  await transaction.request().input("orderId", sql.UniqueIdentifier, orderGuid).query("UPDATE RestaurantOrderCur SET TotalAmount = (SELECT ISNULL(SUM(ActualAmount), 0) FROM RestaurantOrderDetailCur WHERE OrderId = @orderId) WHERE OrderId = @orderId");
 }
 
 async function syncTableStatus(req, tableId) {
   if (!tableId || tableId === "undefined" || tableId === "null") return null;
   const pool = await poolPromise;
- const cleanId = String(tableId)
-  .replace(/^\{|\}$/g, "")
-  .trim();
-  const res = await pool.request().input("tid", sql.UniqueIdentifier, cleanId).query(`
+  const cleanId = String(tableId).replace(/^\{|\}$/g, "").trim();
+  const res = await pool.request().input("tid", sql.VarChar(50), cleanId).query(`
     DECLARE @ActualOrderId UNIQUEIDENTIFIER, @ActualOrderNo NVARCHAR(50), @TableNo VARCHAR(20), @count INT, @total DECIMAL(18,2);
     
-    SELECT TOP 1 @TableNo = LTRIM(RTRIM(TableNumber)) FROM TableMaster WHERE TableId = @tid;
+    SELECT TOP 1 @TableNo = TableNumber FROM TableMaster WHERE TableId = @tid;
 
+    -- 🚀 ROBUST LOOKUP: Prioritize the CurrentOrderId stored in TableMaster to avoid ghost orders
     SELECT TOP 1 @ActualOrderId = OrderId, @ActualOrderNo = OrderNumber
     FROM RestaurantOrderCur 
-    WHERE LTRIM(RTRIM(Tableno)) = @TableNo
-    AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
-    ORDER BY CreatedOn DESC;
+    WHERE (OrderId = (SELECT TOP 1 OrderId FROM RestaurantOrderCur h2 WHERE h2.OrderNumber = (SELECT CurrentOrderId FROM TableMaster WHERE TableId = @tid) AND h2.isOrderClosed = 0))
+    OR (Tableno = @TableNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL))
+    ORDER BY CASE WHEN OrderNumber = (SELECT CurrentOrderId FROM TableMaster WHERE TableId = @tid) THEN 0 ELSE 1 END, CreatedOn DESC;
 
     -- Calculate Totals strictly
     SELECT @count = COUNT(*), @total = ISNULL(SUM(ActualAmount), 0) 
@@ -319,10 +364,16 @@ async function syncTableStatus(req, tableId) {
         ELSE 0 
     END, 
         TotalAmount = @total, 
+        StartTime = CASE 
+                         -- 🚀 NEW ORDER RESET: If the Order ID is changing, reset the timer to fresh
+                         WHEN @ActualOrderNo IS NOT NULL AND @ActualOrderNo <> ISNULL(CurrentOrderId, '') THEN GETDATE()
+                         -- INITIAL SET: If it was NULL/Invalid and we now have items
+                         WHEN (@count > 0 OR Status IN (2, 3)) AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
+                         -- Strictly CLEAR StartTime if table is becoming Available
+                         WHEN @count = 0 AND Status NOT IN (2, 3) THEN NULL 
+                         ELSE StartTime 
+                    END,
         CurrentOrderId = @ActualOrderNo,
-        StartTime = CASE WHEN @count > 0 AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
-                         WHEN @count = 0 THEN NULL 
-                         ELSE StartTime END,
         ModifiedOn = GETDATE()
     WHERE TableId = @tid;
 
@@ -336,14 +387,19 @@ async function syncTableStatus(req, tableId) {
       CASE 
         WHEN Status = 3 AND ModifiedOn IS NOT NULL AND DATEDIFF(MINUTE, ModifiedOn, GETDATE()) >= ISNULL((SELECT TOP 1 HoldOvertimeMinutes FROM CompanySettings), 30) THEN 1 
         ELSE 0 
-      END AS isHoldOvertime
+      END AS isHoldOvertime,
+      CONVERT(VARCHAR, ModifiedOn, 126) as ModifiedOn
     FROM TableMaster WHERE TableId = @tid;
   `);
+
   const updated = res.recordset[0];
+  const now = Date.now();
+  console.log(`[TRACE] [${now}] [TABLE_STATUS_UPDATE] Table: ${tableId} | Status: ${updated?.Status} | Total: ${updated?.TotalAmount}`);
   if (updated) {
     const sectionMap = { "1": "SECTION_1", "2": "SECTION_2", "3": "SECTION_3", "4": "TAKEAWAY" };
     const cleanOrderId = updated.CurrentOrderId || "EMPTY";
     
+    console.log(`[TRACE] [${Date.now()}] [SOCKET_EMIT] table_status_updated | Table: ${cleanId} | Status: ${updated.Status}`);
     req.app.get("io")?.emit("table_status_updated", { 
       tableId: cleanId.toLowerCase(), 
       status: Number(updated.Status),
@@ -352,6 +408,7 @@ async function syncTableStatus(req, tableId) {
       currentOrderId: cleanOrderId,
       tableNo: updated.tableNo,
       section: sectionMap[String(updated.section)] || updated.section,
+      modifiedOn: updated.ModifiedOn,
       isOvertime: updated.isOvertime || 0,
       isHoldOvertime: updated.isHoldOvertime || 0
     });
@@ -362,39 +419,63 @@ async function syncTableStatus(req, tableId) {
 // Routes
 router.post("/save-cart", async (req, res) => {
   try {
-    const { tableId, items, userId, orderId } = req.body;
+    const { tableId, items, userId, orderId, lastUpdate, version } = req.body;
     const pool = await poolPromise;
-   const cleanId = String(tableId)
-  .replace(/^\{|\}$/g, "")
-  .trim();
+    const cleanId = String(tableId).replace(/^\{|\}$/g, "").trim();
+    const now = Date.now();
+
+    console.log(`[TRACE] [${now}] [SAVE-CART] Table: ${cleanId} | Items: ${items?.length || 0} | Version: ${version || 'NONE'} | Update: ${lastUpdate || 'NONE'}`);
+    
     // 🚀 UNIFIED ID: Only generate a professional ID if we actually have items to save
+    // 🚀 UNIFIED ID: Use existing orderId if available, even for empty carts
     let currentOrderId = orderId;
     const hasItems = items && items.length > 0;
 
     if (hasItems && (!currentOrderId || currentOrderId === "NEW" || currentOrderId === "#NEW" || currentOrderId === "PENDING" || currentOrderId.length < 10)) {
       currentOrderId = await getOrGenerateOrderId(req, cleanId);
     } else if (!hasItems) {
-      // If saving an empty cart, we should clear the TableMaster's CurrentOrderId
+      // 🚀 NUCLEAR CLEAR: If saving an empty cart, we should clear EVERY open order for this table
+      // and reset the table status completely to prevent ghosts.
+      console.log(`[TRACE] [${now}] [SAVE-CART] NUCLEAR CLEAR for Table ${cleanId}`);
+      await pool.request()
+        .input("tid", sql.VarChar(50), cleanId)
+        .query(`
+          DECLARE @TableNo VARCHAR(20);
+          SELECT TOP 1 @TableNo = TableNumber FROM TableMaster WHERE TableId = @tid;
+
+          IF @TableNo IS NOT NULL
+          BEGIN
+            -- Delete all unsent items for ALL open orders on this table
+            DELETE FROM RestaurantmodifierdetailCur WHERE OrderDetailId IN (
+              SELECT OrderDetailId FROM RestaurantOrderDetailCur WHERE OrderId IN (
+                SELECT OrderId FROM RestaurantOrderCur WHERE Tableno = @TableNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+              ) AND StatusCode = 1
+            );
+            DELETE FROM RestaurantOrderDetailCur WHERE OrderId IN (
+              SELECT OrderId FROM RestaurantOrderCur WHERE Tableno = @TableNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+            ) AND StatusCode = 1;
+
+            -- Force close all orders
+            UPDATE RestaurantOrderCur SET isOrderClosed = 1, ModifiedOn = GETDATE() 
+            WHERE Tableno = @TableNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL);
+          END
+
+          -- Reset table status
+          UPDATE TableMaster SET Status = 0, CurrentOrderId = NULL, StartTime = NULL WHERE TableId = @tid;
+        `);
       currentOrderId = null;
     }
 
-    // const transaction = new sql.Transaction(pool);
-    // await transaction.begin();
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
     try {
-      if (hasItems) {
-       await syncToProfessionalTables(
-            { request: () => pool.request() },
-            cleanId,
-            currentOrderId,
-            items || [],
-            userId
-          );
-      }
+      // 🚀 ALWAYS SYNC: Even if items is empty, we need to run syncToProfessionalTables 
+      // to ensure any existing items in the DB are voided/cleaned up.
+      await syncToProfessionalTables(transaction, cleanId, currentOrderId, items || [], userId);
       
       // 🚀 CRITICAL: Update TableMaster INSIDE the same transaction 
-      // await transaction.request()
-      await pool.request()
-        .input("tid", sql.UniqueIdentifier, cleanId)
+      await transaction.request()
+        .input("tid", sql.VarChar(50), cleanId)
         .input("oid", sql.NVarChar(50), currentOrderId)
         .query(`
           UPDATE TableMaster 
@@ -406,19 +487,19 @@ router.post("/save-cart", async (req, res) => {
           WHERE TableId = @tid
         `);
 
-      // await transaction.commit();
+      await transaction.commit();
       
       res.json({ success: true, orderId: currentOrderId });
       
       // 🔥 LIVE SYNC: Notify all other devices that this table's cart has changed
       const io = req.app.get("io");
       if (io) {
-        io.emit("cart_updated", { tableId: cleanId, orderId: currentOrderId });
+        io.emit("cart_updated", { tableId: cleanId.toLowerCase(), orderId: currentOrderId });
       }
 
       syncTableStatus(req, cleanId).catch(() => {});
     } catch (e) { 
-      // if (transaction._isStarted) await transaction.rollback(); 
+      if (transaction._isStarted) await transaction.rollback(); 
       console.error("❌ SaveCart SQL Error:", e.message);
       res.status(500).json({ error: "DB_ERROR: " + e.message }); 
     }
@@ -428,50 +509,14 @@ router.post("/save-cart", async (req, res) => {
 router.post("/send", async (req, res) => {
   try {
     const { tableId, orderId, items, userId } = req.body;
+    const pool = await poolPromise;
+    const cleanId = String(tableId).replace(/^\{|\}$/g, "").trim();
 
-const pool = await poolPromise;
-
-let actualTableId = tableId;
-
-const isGuid = /^[0-9a-fA-F-]{36}$/;
-
-if (!isGuid.test(String(tableId))) {
-
-  const tableLookup = await pool.request()
-    .input("tableNo", sql.VarChar(50), String(tableId))
-    .query(`
-      SELECT TOP 1 TableId
-      FROM TableMaster
-      WHERE TableNumber = @tableNo
-    `);
-
-  if (tableLookup.recordset.length === 0) {
-    throw new Error("Table not found");
-  }
-
-  actualTableId = tableLookup.recordset[0].TableId;
-}
-
-const cleanId = String(actualTableId)
-  .replace(/^\{|\}$/g, "")
-  .trim();
-
-    // const transaction = new sql.Transaction(pool);
-    // await transaction.begin();
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
     try {
       // 1. 🚀 GENERATE PROFESSIONAL ID NOW (At the moment of sending)
-    //   const finalOrderId = await getOrGenerateOrderId(req, cleanId);
-
-      let finalOrderId = orderId;
-
-if (
-  !finalOrderId ||
-  finalOrderId === "NEW" ||
-  finalOrderId === "#NEW" ||
-  finalOrderId === "PENDING"
-) {
- finalOrderId = `ORD${Date.now().toString().slice(-6)}`;
-}
+      const finalOrderId = await getOrGenerateOrderId(req, cleanId);
 
       // 2. FORCE SENT STATUS — use items from client, or fall back to DB items
       let clientItems = items || [];
@@ -479,14 +524,26 @@ if (
         // 🔥 SAFETY NET: Frontend forgot to send items. Fetch from DB.
         console.warn("⚠️ [Send] No items received from client - fetching from DB as fallback");
         const dbItems = await pool.request()
-          .input("tableNo", sql.UniqueIdentifier, cleanId)
-          .query(`SELECT d.OrderDetailId as lineItemId, d.DishId as id, dish.Name as name,
-            d.Quantity as qty, d.PricePerUnit as price, d.StatusCode, d.ModifiersJSON, d.Remarks as note, d.isTakeAway as isTakeaway
+          .input("tableNo", sql.VarChar(20), cleanId)
+          .query(`SELECT 
+            d.OrderDetailId as lineItemId, d.DishId as id, dish.Name as name,
+            d.Quantity as qty, d.PricePerUnit as price, d.StatusCode, 
+            d.ModifiersJSON, d.Remarks as note, d.isTakeAway as isTakeaway,
+            ISNULL(ckt.KitchenTypeCode, '2') as KitchenTypeCode, 
+            ISNULL(ISNULL(ckt.KitchenTypeName, cat.CategoryName), 'KITCHEN') as KitchenTypeName,
+            pm.PrinterPath as PrinterIP
             FROM RestaurantOrderDetailCur d
             JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
             LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
-            WHERE (LTRIM(RTRIM(h.Tableno)) = (SELECT LTRIM(RTRIM(TableNumber)) FROM TableMaster WHERE TableId = @tableNo)
-              OR LTRIM(RTRIM(h.Tableno)) = LTRIM(RTRIM(@tableNo))) 
+            LEFT JOIN DishGroupMaster dgm ON dish.DishGroupId = dgm.DishGroupId
+            LEFT JOIN CategoryMaster cat ON dgm.CategoryId = cat.CategoryId
+            LEFT JOIN CategoryKitchenType ckt ON dgm.CategoryId = ckt.CategoryId
+            LEFT JOIN (
+              SELECT *, ROW_NUMBER() OVER(PARTITION BY KitchenTypeValue ORDER BY PrinterId) as rn 
+              FROM PrintMaster WHERE IsActive = 1
+            ) pm ON CAST(ckt.KitchenTypeCode AS VARCHAR(50)) = CAST(pm.KitchenTypeValue AS VARCHAR(50)) AND pm.rn = 1
+            WHERE (h.Tableno = (SELECT TableNumber FROM TableMaster WHERE TableId = @tableNo)
+              OR h.Tableno = @tableNo) 
               AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL) 
               AND d.StatusCode <> 0`);
         clientItems = dbItems.recordset;
@@ -497,17 +554,11 @@ if (
       }));
 
       // 3. FORCE SYNC with the new Professional ID
-      await syncToProfessionalTables(
-            { request: () => pool.request() },
-            cleanId,
-            finalOrderId,
-            sentItems,
-            userId
-            );
+      await syncToProfessionalTables(transaction, cleanId, finalOrderId, sentItems, userId);
 
       // 4. Lock Table to the new ID
-     await pool.request()
-        .input("tid", sql.UniqueIdentifier, cleanId)
+      await transaction.request()
+        .input("tid", sql.VarChar(50), cleanId)
         .input("oid", sql.NVarChar(50), finalOrderId)
         .query(`
           UPDATE TableMaster 
@@ -518,33 +569,41 @@ if (
           WHERE TableId = @tid
         `);
 
-    //   await transaction.commit();
+      await transaction.commit();
       
       res.json({ success: true, orderId: finalOrderId });
 
       // 🔥 REAL-TIME BROADCAST: Notify KDS and all other Waiter devices
       const io = req.app.get("io");
       if (io) {
+        const tableQuery = await pool.request()
+          .input("tid", sql.VarChar(50), cleanId)
+          .query("SELECT TableNumber, DiningSection FROM TableMaster WHERE TableId = @tid");
+        const tableRow = tableQuery.recordset[0];
+        const tableNo = tableRow?.TableNumber ? String(tableRow.TableNumber).trim() : "";
+        const sectionMap = { "1": "SECTION_1", "2": "SECTION_2", "3": "SECTION_3", "4": "TAKEAWAY" };
+        const section = tableRow ? (sectionMap[String(tableRow.DiningSection)] || "SECTION_1") : "SECTION_1";
+
         io.emit("new_order", {
           orderId: finalOrderId,
           context: {
             orderType: "DINE_IN",
             tableId: cleanId,
-            tableNo: (await pool.request().input("tid", sql.UniqueIdentifier, cleanId).query("SELECT TableNumber FROM TableMaster WHERE TableId = @tid")).recordset[0]?.TableNumber,
-            section: "SECTION_1" // Fallback, will be refined by store
+            tableNo: tableNo,
+            section: section
           },
           items: sentItems,
           createdAt: Date.now()
         });
-        io.emit("cart_updated", { tableId: cleanId, orderId: finalOrderId });
+        io.emit("cart_updated", { tableId: cleanId.toLowerCase(), orderId: finalOrderId });
         io.emit("kot_printed", { tableId: cleanId, orderId: finalOrderId });
       }
 
       // 5. Refresh totals and notify instantly
       syncTableStatus(req, cleanId).catch(() => {});
     } catch (e) { 
-    //   await transaction.rollback(); 
-      console.error("❌ FULL SEND ERROR:", e);
+      await transaction.rollback(); 
+      console.error("❌ SendOrder SQL Error:", e.message);
       res.status(500).json({ error: "SEND_ERROR: " + e.message }); 
     }
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -561,7 +620,7 @@ router.get("/cart/:tableId", async (req, res) => {
 
     // Get table info (TableNumber + CurrentOrderId)
     const tableInfo = await pool.request()
-     .input("tid", sql.UniqueIdentifier, cleanId)
+      .input("tid", sql.VarChar(50), cleanId)
       .query("SELECT TableNumber, CurrentOrderId FROM TableMaster WHERE TableId = @tid");
     
     const tableRow = tableInfo.recordset[0];
@@ -575,7 +634,7 @@ router.get("/cart/:tableId", async (req, res) => {
       currentOrderId !== 'NEW';
 
     const result = await pool.request()
-      .input("tid", sql.UniqueIdentifier, cleanId)
+      .input("tid", sql.VarChar(50), cleanId)
       .input("tableNo", sql.VarChar(20), String(tableNumber || ""))
       .input("orderNo", sql.NVarChar(50), isRealOrderId ? currentOrderId : "__NONE__")
       .query(`
@@ -588,15 +647,29 @@ router.get("/cart/:tableId", async (req, res) => {
             WHEN 1 THEN 'NEW' WHEN 2 THEN 'SENT' WHEN 3 THEN 'READY' 
             WHEN 4 THEN 'SERVED' WHEN 5 THEN 'HOLD' WHEN 0 THEN 'VOIDED' 
             ELSE 'SENT' 
-          END as status
+          END as status,
+          ISNULL(ckt.KitchenTypeCode, '2') as KitchenTypeCode, 
+          ISNULL(ISNULL(ckt.KitchenTypeName, cat.CategoryName), 'KITCHEN') as KitchenTypeName,
+          pm.PrinterPath as PrinterIP
         FROM RestaurantOrderDetailCur d 
         JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId 
         LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
+        LEFT JOIN DishGroupMaster dgm ON dish.DishGroupId = dgm.DishGroupId
+        LEFT JOIN CategoryMaster cat ON dgm.CategoryId = cat.CategoryId
+        LEFT JOIN CategoryKitchenType ckt ON dgm.CategoryId = ckt.CategoryId
+        LEFT JOIN (
+          SELECT *, ROW_NUMBER() OVER(PARTITION BY KitchenTypeValue ORDER BY PrinterId) as rn 
+          FROM PrintMaster WHERE IsActive = 1
+        ) pm ON CAST(ckt.KitchenTypeCode AS VARCHAR(50)) = CAST(pm.KitchenTypeValue AS VARCHAR(50)) AND pm.rn = 1
         WHERE 
           h.isOrderClosed = 0
+          AND d.StatusCode <> 0 -- 🚀 SHIELD: Never fetch voided items back into the active cart
           AND (
             h.OrderNumber = @orderNo
-            OR h.OrderId = (SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE Tableno = @tableNo AND isOrderClosed = 0 ORDER BY CreatedOn DESC)
+            OR (
+              @orderNo = '__NONE__' AND 
+              h.OrderId = (SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE Tableno = @tableNo AND isOrderClosed = 0 ORDER BY CreatedOn DESC)
+            )
           )
         ORDER BY d.CreatedOn ASC
       `);
@@ -620,10 +693,10 @@ router.post("/cancel", async (req, res) => {
     const orderData = await pool.request()
       .input("oid", sql.NVarChar(100), orderId)
       .query(`
-        SELECT h.OrderId, h.OrderNumber, h.Tableno, h.BusinessUnitId, h.CreatedBy, h.MobileNo,
+        SELECT h.OrderId, h.OrderNumber, RTRIM(LTRIM(h.Tableno)) AS Tableno, h.BusinessUnitId, h.CreatedBy, h.MobileNo,
                tm.DiningSection, tm.TableId
         FROM RestaurantOrderCur h
-        LEFT JOIN TableMaster tm ON LTRIM(RTRIM(h.Tableno)) = LTRIM(RTRIM(tm.TableNumber))
+        LEFT JOIN TableMaster tm ON h.Tableno = tm.TableNumber
         WHERE h.OrderNumber = @oid AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL)
       `);
     
@@ -647,8 +720,8 @@ router.post("/cancel", async (req, res) => {
     const subTotal = items.reduce((sum, item) => sum + (item.ActualAmount || 0), 0);
     const voidQty = items.reduce((sum, item) => sum + (item.Quantity || 0), 0);
 
-    // const transaction = new sql.Transaction(pool);
-    // await transaction.begin();
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
     try {
       const settlementId = crypto.randomUUID();
       
@@ -702,7 +775,42 @@ router.post("/cancel", async (req, res) => {
           `);
       }
 
-      // 4. Update Current Tables (StatusCode 4 = Cancelled)
+      // 4. Insert into supporting Settlement tables for reporting (Audit Trail)
+      await transaction.request()
+        .input("sid", sql.UniqueIdentifier, settlementId)
+        .input("oid", sql.NVarChar(50), orderId)
+        .input("bizId", sql.UniqueIdentifier, header.BusinessUnitId || DEFAULT_GUID)
+        .input("userId", sql.UniqueIdentifier, toGuidOrNull(userId))
+        .input("subTotal", sql.Money, subTotal)
+        .input("voidQty", sql.Int, voidQty)
+        .query(`
+          -- Insert into SettlementTotalSales (Zeroed)
+          INSERT INTO SettlementTotalSales (SettlementID, PayMode, SysAmount, ManualAmount, AmountDiff, ReceiptCount)
+          VALUES (@sid, 'VOID', 0, 0, 0, @voidQty);
+
+          -- Insert into SettlementDetail (Zeroed)
+          INSERT INTO SettlementDetail (SettlementId, Paymode, SysAmount, ManualAmount, SortageOrExces, ReceiptCount, IsCollected)
+          VALUES (@sid, 'VOID', 0, 0, 0, @voidQty, 0);
+
+          -- Insert into SettlementTranDetail (Zeroed)
+          INSERT INTO SettlementTranDetail (SettlementID, PayMode, CashIn, CashOut)
+          VALUES (@sid, 'VOID', 0, 0);
+
+          -- Insert into RestaurantInvoice (Cancelled Status 4)
+          INSERT INTO RestaurantInvoice (
+            BusinessUnitId, RestaurantBillId, OrderId, BillNumber, OrderDateTime, TimeBilled, 
+            TotalLineItemAmount, TotalTax, DiscountAmount, TotalAmount, StatusCode, 
+            CreatedBy, CreatedOn, InvoiceDate, ServiceCharge, RoundedBy, TotalAmountLessFreight,
+            PaymentTermCode
+          ) VALUES (
+            @bizId, @sid, @sid, @oid, GETDATE(), GETDATE(),
+            @subTotal, 0, 0, 0, 4,
+            @userId, GETDATE(), CAST(GETDATE() AS DATE), 0, 0, @subTotal,
+            0
+          );
+        `);
+
+      // 5. Update Current Tables (StatusCode 4 = Cancelled)
       await transaction.request()
         .input("oid", sql.NVarChar(50), orderId)
         .query(`
@@ -716,7 +824,7 @@ router.post("/cancel", async (req, res) => {
 
       await transaction.commit();
       
-      req.app.get("io")?.emit("table_status_updated", { tableId: cleanTid, status: 0, totalAmount: 0 });
+      await syncTableStatus(req, cleanTid);
       req.app.get("io")?.emit("order_closed", { tableId: cleanTid, orderId: orderId });
       
       res.json({ success: true });
@@ -736,10 +844,10 @@ router.post("/complete", async (req, res) => {
     
     // Final atomic update: Close the professional order and release the table
     await pool.request()
-      .input("tid", sql.UniqueIdentifier, cleanId)
+      .input("tid", sql.VarChar(50), cleanId)
       .query(`
         UPDATE RestaurantOrderCur SET isOrderClosed = 1, ModifiedOn = GETDATE() 
-        WHERE LTRIM(RTRIM(Tableno)) = (SELECT TOP 1 LTRIM(RTRIM(TableNumber)) FROM TableMaster WHERE TableId = @tid) 
+        WHERE Tableno = (SELECT TOP 1 TableNumber FROM TableMaster WHERE TableId = @tid) 
         AND (isOrderClosed = 0 OR isOrderClosed IS NULL);
         
         UPDATE TableMaster SET Status = 0, CurrentOrderId = NULL, StartTime = NULL, TotalAmount = 0, ModifiedOn = GETDATE() WHERE TableId = @tid;
@@ -750,9 +858,10 @@ router.post("/complete", async (req, res) => {
     // 🔥 UNIFIED SIGNAL: Use order_status_update for consistency
     const io = req.app.get("io");
     if (io) {
-      io.emit("order_closed", { tableId: cleanId });
+      const lid = cleanId.toLowerCase();
+      io.emit("order_closed", { tableId: lid });
       io.emit("order_status_update", { 
-        tableId: cleanId, 
+        tableId: lid, 
         action: "CLOSE",
         orderId: updated?.CurrentOrderId 
       });
@@ -772,7 +881,7 @@ router.post("/hold", async (req, res) => {
 
     // Set status to 3 (Hold)
     await pool.request()
-      .input("tid", sql.UniqueIdentifier, cleanId)
+      .input("tid", sql.VarChar(50), cleanId)
       .query(`
         UPDATE TableMaster 
         SET Status = 3, 
@@ -806,10 +915,20 @@ router.post("/checkout", async (req, res) => {
         SET d.StatusCode = 4, d.ModifiedOn = GETDATE()
         FROM RestaurantOrderDetailCur d
         JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
-        JOIN TableMaster tm ON LTRIM(RTRIM(h.Tableno)) = LTRIM(RTRIM(tm.TableNumber))
+        JOIN TableMaster tm ON h.Tableno = tm.TableNumber
         WHERE tm.TableId = @tid 
         AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL)
         AND d.StatusCode IN (1, 2, 3, 5);
+
+        -- 3. Expire VOIDED items (StatusCode 0) from KDS instantly
+        UPDATE d
+        SET d.ModifiedOn = DATEADD(MINUTE, -10, GETDATE())
+        FROM RestaurantOrderDetailCur d
+        JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
+        JOIN TableMaster tm ON h.Tableno = tm.TableNumber
+        WHERE tm.TableId = @tid 
+        AND (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL)
+        AND d.StatusCode = 0;
       `);
 
     const updated = await syncTableStatus(req, cleanId);
@@ -817,13 +936,14 @@ router.post("/checkout", async (req, res) => {
     // 🔥 KDS & GLOBAL SYNC: Harmonized signals
     const io = req.app.get("io");
     if (io) {
+      const lid = cleanId.toLowerCase();
       io.emit("order_closed", { 
-        tableId: cleanId, 
+        tableId: lid, 
         tableNo: updated?.tableNo,
         section: updated?.section 
       });
       io.emit("order_status_update", {
-        tableId: cleanId,
+        tableId: lid,
         action: "CLOSE",
         orderId: updated?.CurrentOrderId
       });
@@ -838,24 +958,45 @@ router.post("/checkout", async (req, res) => {
 
 router.post("/remove-item", async (req, res) => {
   try {
-    const { tableId, itemId, qtyToVoid, reason } = req.body;
+    const { tableId, itemId, qtyToVoid, reason, version } = req.body;
     const userId = req.body.userId || DEFAULT_GUID;
     const pool = await poolPromise;
-    // const transaction = new sql.Transaction(pool);
-    // await transaction.begin();
+    const now = Date.now();
+    console.log(`[TRACE] [${now}] [REMOVE-ITEM] Table: ${tableId} | ItemID: ${itemId} | Version: ${version || 'NONE'}`);
+
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
     try {
-      // Professional Voiding
-      await transaction.request().input("itemId", sql.UniqueIdentifier, itemId).input("userId", sql.UniqueIdentifier, userId).input("reason", sql.NVarChar(255), reason || "").query(`
-        UPDATE RestaurantOrderDetailCur 
-        SET StatusCode = 0, ModifiedBy = @userId, ModifiedOn = GETDATE(), Remarks = ISNULL(Remarks, '') + ' (VOID: ' + @reason + ')'
-        WHERE OrderDetailId = @itemId
-      `);
+      // 🚀 SMART REMOVAL: Delete if NEW, Void if SENT
+      await transaction.request()
+        .input("itemId", sql.VarChar(50), itemId)
+        .input("userId", sql.VarChar(50), userId)
+        .input("reason", sql.NVarChar(255), reason || "")
+        .query(`
+          DECLARE @CurrentStatus INT;
+          SELECT @CurrentStatus = StatusCode FROM RestaurantOrderDetailCur WHERE OrderDetailId = @itemId;
+
+          IF @CurrentStatus = 1
+          BEGIN
+            -- Hard delete unsent items
+            DELETE FROM RestaurantmodifierdetailCur WHERE OrderDetailId = @itemId;
+            DELETE FROM RestaurantOrderDetailCur WHERE OrderDetailId = @itemId;
+          END
+          ELSE
+          BEGIN
+            -- Void sent items
+            UPDATE RestaurantOrderDetailCur 
+            SET StatusCode = 0, ModifiedBy = @userId, ModifiedOn = GETDATE(), 
+                Remarks = ISNULL(Remarks, '') + ' (VOID: ' + @reason + ')'
+            WHERE OrderDetailId = @itemId;
+          END
+        `);
       await transaction.commit();
       
       // 🚀 Refresh total immediately
       syncTableStatus(req, tableId).catch(() => {});
 
-      req.app.get("io")?.emit("cart_updated", { tableId });
+      req.app.get("io")?.emit("cart_updated", { tableId: String(tableId || "").toLowerCase() });
       res.json({ success: true });
     } catch (e) { await transaction.rollback(); throw e; }
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -875,11 +1016,16 @@ router.post("/update-item-status", async (req, res) => {
     const orderId = orderRes.recordset[0]?.OrderNumber;
 
     await pool.request()
-      .input("id", sql.UniqueIdentifier, lineItemId)
+      .input("id", sql.VarChar(50), lineItemId)
       .input("code", sql.Int, statusMap[status] || 2)
       .query("UPDATE RestaurantOrderDetailCur SET StatusCode = @code, ModifiedOn = GETDATE() WHERE OrderDetailId = @id");
     
-    req.app.get("io")?.emit("item_status_updated", { lineItemId, status, tableId, orderId });
+    req.app.get("io")?.emit("item_status_updated", { 
+      lineItemId, 
+      status, 
+      tableId: String(tableId || "").toLowerCase(), 
+      orderId 
+    });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -890,10 +1036,11 @@ router.get("/active-kitchen", async (req, res) => {
     const result = await pool.request().query(`
       SELECT 
         d.OrderDetailId as lineItemId, d.DishId as id, d.Quantity as qty, d.StatusCode, 
-        h.OrderNumber as orderId, dish.Name as name, LTRIM(RTRIM(h.Tableno)) as tableNo, 
+        d.PricePerUnit as price,
+        h.OrderNumber as orderId, dish.Name as name, h.Tableno as tableNo, 
         d.Remarks as note, d.ModifiersJSON, d.isTakeAway, DATEDIFF(SECOND, d.CreatedOn, GETDATE()) as elapsedSeconds,
         ISNULL(ckt.KitchenTypeCode, '0') as KitchenTypeCode, 
-        ISNULL(ISNULL(ckt.KitchenTypeName, cat.CategoryName), 'General') as KitchenTypeName,
+        ISNULL(ISNULL(ckt.KitchenTypeName, cat.CategoryName), 'KITCHEN') as KitchenTypeName,
         pm.PrinterPath as PrinterIP,
         tm.TableId, tm.DiningSection
       FROM RestaurantOrderDetailCur d 
@@ -903,9 +1050,11 @@ router.get("/active-kitchen", async (req, res) => {
       LEFT JOIN CategoryMaster cat ON dgm.CategoryId = cat.CategoryId
       LEFT JOIN CategoryKitchenType ckt ON dgm.CategoryId = ckt.CategoryId
       LEFT JOIN PrintMaster pm ON CAST(ckt.KitchenTypeCode AS VARCHAR(50)) = CAST(pm.KitchenTypeValue AS VARCHAR(50))
-      LEFT JOIN TableMaster tm ON LTRIM(RTRIM(h.Tableno)) = LTRIM(RTRIM(tm.TableNumber))
+      LEFT JOIN TableMaster tm ON h.Tableno = tm.TableNumber
       WHERE (h.isOrderClosed = 0 OR h.isOrderClosed IS NULL)
-      AND (d.StatusCode IN (2,3,5) OR (d.StatusCode = 0 AND DATEDIFF(MINUTE, d.ModifiedOn, GETDATE()) < 10))
+      -- 🚀 FIX: Include NEW (1), SENT (2), READY (3), SERVED (4), HOLD (5) items for Merge Bill to work
+      -- Also include recently voided items (StatusCode 0) within last 3 minutes for sync consistency
+      AND (d.StatusCode IN (1,2,3,4,5) OR (d.StatusCode = 0 AND DATEDIFF(MINUTE, d.ModifiedOn, GETDATE()) < 3))
       AND h.OrderNumber IS NOT NULL
       AND h.OrderNumber NOT LIKE 'TEMP-%'
       AND h.OrderNumber NOT IN ('PENDING', 'NEW', '#NEW', '')
@@ -914,21 +1063,24 @@ router.get("/active-kitchen", async (req, res) => {
     const orders = {};
     result.recordset.forEach(row => {
       if (!orders[row.orderId]) {
-        const isTakeaway = !row.tableNo || row.tableNo === 'TAKEAWAY' || String(row.tableNo).startsWith('TW');
+        const isTakeaway = !row.tableNo || row.tableNo === 'TAKEAWAY' || String(row.tableNo).trim().startsWith('TW');
+        const sectionMap = { "1": "SECTION_1", "2": "SECTION_2", "3": "SECTION_3", "4": "TAKEAWAY" };
+        const normalizedSection = sectionMap[String(row.DiningSection)] || row.DiningSection || "";
+
         orders[row.orderId] = { 
           orderId: row.orderId, 
           context: { 
             orderType: isTakeaway ? 'TAKEAWAY' : 'DINE_IN',
-            tableId: row.TableId,
-            tableNo: isTakeaway ? null : row.tableNo,
-            section: row.DiningSection || "",
-            takeawayNo: isTakeaway ? (row.tableNo === 'TAKEAWAY' ? row.orderId.slice(-4) : row.tableNo) : null
+            tableId: row.TableId ? String(row.TableId).replace(/^\{|\}$/g, "").trim().toLowerCase() : undefined,
+            tableNo: isTakeaway ? null : String(row.tableNo).trim(),
+            section: normalizedSection,
+            takeawayNo: isTakeaway ? (row.tableNo === 'TAKEAWAY' ? row.orderId.slice(-4) : String(row.tableNo).trim()) : null
           }, 
           items: [], 
           createdAt: Date.now() - (row.elapsedSeconds * 1000) 
         };
       }
-      const statusMap = { 1:'NEW', 2:'SENT', 3:'READY', 4:'SERVED', 5:'HOLD' };
+      const statusMap = { 0:'VOIDED', 1:'NEW', 2:'SENT', 3:'READY', 4:'SERVED', 5:'HOLD' };
       orders[row.orderId].items.push({ 
         ...row, 
         status: statusMap[row.StatusCode], 
@@ -946,6 +1098,174 @@ router.post("/log-print", async (req, res) => {
     await pool.request().input("oid", sql.UniqueIdentifier, orderId && orderId.length > 30 ? orderId : null).input("ono", sql.VarChar(50), orderNumber).input("pt", sql.Int, printType || 1).query("INSERT INTO PrintReport (OrderId, Ordernumber, PrintType, orderDate) VALUES (@oid, @ono, @pt, GETDATE())");
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post("/merge", async (req, res) => {
+  try {
+    const { targetTableId, sourceTableIds, userId } = req.body;
+    const pool = await poolPromise;
+    const cleanTargetId = String(targetTableId).replace(/^\{|\}$/g, "").trim();
+
+    const activeOrg = await getActiveOrganization();
+    const businessUnitId = activeOrg.businessUnitId;
+
+    // 1. Setup audit history table
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[OrderMergeHistory]') AND type in (N'U'))
+      BEGIN
+        CREATE TABLE [dbo].[OrderMergeHistory] (
+          [MergeId] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+          [ParentOrderId] UNIQUEIDENTIFIER NOT NULL,
+          [ChildOrderId] UNIQUEIDENTIFIER NOT NULL,
+          [ParentTableNo] NVARCHAR(50) NULL,
+          [ChildTableNo] NVARCHAR(50) NULL,
+          [MergedAt] DATETIME NOT NULL DEFAULT GETDATE(),
+          [MergedBy] UNIQUEIDENTIFIER NULL,
+          CONSTRAINT [PK_OrderMergeHistory] PRIMARY KEY CLUSTERED ([MergeId] ASC)
+        )
+      END
+    `);
+
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+    
+    try {
+      // 0. Ensure target table exists and has a CurrentOrderId with UPDLOCK for concurrency
+      const targetCheck = await transaction.request()
+        .input("tid", sql.UniqueIdentifier, cleanTargetId)
+        .query("SELECT TableNumber, CurrentOrderId FROM TableMaster WITH (UPDLOCK) WHERE TableId = @tid");
+      
+      if (targetCheck.recordset.length === 0) {
+        throw new Error("Target table not found");
+      }
+      
+      const targetTableNo = targetCheck.recordset[0].TableNumber;
+      const targetOrderId = targetCheck.recordset[0].CurrentOrderId;
+      if (!targetOrderId || targetOrderId === "NEW") {
+        throw new Error("Target table has no active order. Add at least one item first.");
+      }
+
+      // Fetch the target Order Guid
+      const targetGuidRes = await transaction.request()
+        .input("orderNo", sql.NVarChar(50), targetOrderId)
+        .query("SELECT TOP 1 OrderId FROM RestaurantOrderCur WITH (UPDLOCK) WHERE OrderNumber = @orderNo AND isOrderClosed = 0");
+      const targetOrderGuid = targetGuidRes.recordset[0]?.OrderId;
+      if (!targetOrderGuid) {
+        throw new Error("Target active order record not found or is already closed.");
+      }
+
+      const io = req.app.get("io");
+      
+      for (const sourceTableId of sourceTableIds) {
+        const cleanSourceId = String(sourceTableId).replace(/^\{|\}$/g, "").trim();
+        if (cleanSourceId === cleanTargetId) continue;
+
+        const sourceCheck = await transaction.request()
+          .input("tid", sql.UniqueIdentifier, cleanSourceId)
+          .query("SELECT TableNumber, CurrentOrderId FROM TableMaster WITH (UPDLOCK) WHERE TableId = @tid");
+        
+        if (sourceCheck.recordset.length === 0) continue;
+        const sourceTableNo = sourceCheck.recordset[0].TableNumber;
+        const sourceOrderId = sourceCheck.recordset[0].CurrentOrderId;
+        if (!sourceOrderId || sourceOrderId === "NEW") continue;
+
+        // Fetch source order guid
+        const sourceGuidRes = await transaction.request()
+          .input("orderNo", sql.NVarChar(50), sourceOrderId)
+          .query("SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL)");
+        const sourceOrderGuid = sourceGuidRes.recordset[0]?.OrderId;
+        if (!sourceOrderGuid) continue;
+
+        // A. Insert merge relationship
+        await transaction.request()
+          .input("parentOid", sql.UniqueIdentifier, targetOrderGuid)
+          .input("childOid", sql.UniqueIdentifier, sourceOrderGuid)
+          .input("parentTableNo", sql.NVarChar(50), targetTableNo)
+          .input("childTableNo", sql.NVarChar(50), sourceTableNo)
+          .input("mergedBy", sql.UniqueIdentifier, toGuidOrNull(userId) || DEFAULT_GUID)
+          .query(`
+            INSERT INTO OrderMergeHistory (ParentOrderId, ChildOrderId, ParentTableNo, ChildTableNo, MergedAt, MergedBy)
+            VALUES (@parentOid, @childOid, @parentTableNo, @childTableNo, GETDATE(), @mergedBy)
+          `);
+
+        // B. Re-point items to target order
+        await transaction.request()
+          .input("parentOid", sql.UniqueIdentifier, targetOrderGuid)
+          .input("parentOrderNo", sql.NVarChar(100), targetOrderId)
+          .input("parentTableNo", sql.NVarChar(10), targetTableNo)
+          .input("childOid", sql.UniqueIdentifier, sourceOrderGuid)
+          .query(`
+            -- Re-point modifiers
+            UPDATE RestaurantmodifierdetailCur
+            SET OrderId = @parentOid
+            WHERE OrderId = @childOid;
+
+            -- Re-point items
+            UPDATE RestaurantOrderDetailCur
+            SET OrderId = @parentOid,
+                OrderNumber = @parentOrderNo,
+                Tableno = @parentTableNo,
+                ModifiedOn = GETDATE()
+            WHERE OrderId = @childOid;
+          `);
+
+        // C. Close source order
+        await transaction.request()
+          .input("childOid", sql.UniqueIdentifier, sourceOrderGuid)
+          .query(`
+            UPDATE RestaurantOrderCur
+            SET isOrderClosed = 1,
+                StatusCode = 3,
+                ModifiedOn = GETDATE()
+            WHERE OrderId = @childOid
+          `);
+
+        // D. Clear source table & persistent CartItems
+        await transaction.request()
+          .input("cartId", sql.NVarChar(128), cleanSourceId)
+          .query("DELETE FROM [dbo].[CartItems] WHERE [CartId] = @cartId");
+
+        await transaction.request()
+          .input("tid", sql.UniqueIdentifier, cleanSourceId)
+          .query("UPDATE TableMaster SET Status = 0, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL WHERE TableId = @tid");
+
+        // E. Emit source socket events immediately
+        if (io) {
+          io.emit("table_status_updated", { tableId: cleanSourceId.toLowerCase(), status: 0, totalAmount: 0 });
+          io.emit("cart_updated", { tableId: cleanSourceId.toLowerCase() });
+          io.emit("order_closed", { tableId: cleanSourceId.toLowerCase(), tableNo: sourceTableNo, orderId: sourceOrderId });
+        }
+      }
+
+      // 2. Calculate Combined Total for Target Order
+      const combinedTotalRes = await transaction.request()
+        .input("parentOid", sql.UniqueIdentifier, targetOrderGuid)
+        .query("SELECT SUM(TotalDetailLineAmount) as Total FROM RestaurantOrderDetailCur WHERE OrderId = @parentOid AND StatusCode <> 0");
+      const targetCombinedTotal = combinedTotalRes.recordset[0].Total || 0;
+
+      // 3. Update Target Table Master Total
+      await transaction.request()
+        .input("tid", sql.UniqueIdentifier, cleanTargetId)
+        .input("total", sql.Decimal(18, 2), targetCombinedTotal)
+        .query("UPDATE TableMaster SET TotalAmount = @total WHERE TableId = @tid");
+
+      await transaction.commit();
+
+      // 4. Emit target socket events
+      if (io) {
+        io.emit("table_status_updated", { tableId: cleanTargetId.toLowerCase(), status: 1, totalAmount: targetCombinedTotal });
+        io.emit("cart_updated", { tableId: cleanTargetId.toLowerCase(), orderId: targetOrderId });
+      }
+
+      res.json({ success: true, totalAmount: targetCombinedTotal });
+    } catch (err) {
+      if (transaction._isStarted) await transaction.rollback();
+      throw err;
+    }
+  } catch (err) {
+    console.error("❌ Merge Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;
