@@ -493,7 +493,7 @@ if (!hasItems) {
       WHERE TableId = @tid;
     `);
 
-  currentOrderId = null;
+  currentOrderId = orderId || "PENDING";
 }
 
     const transaction = new sql.Transaction(pool);
