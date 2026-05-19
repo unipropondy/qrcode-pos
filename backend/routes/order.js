@@ -63,7 +63,7 @@ async function getOrGenerateOrderId(req, tableId) {
           IF @TableNo IS NOT NULL
           BEGIN
             UPDATE RestaurantOrderCur 
-            SET isOrderClosed = 1, ModifiedOn = GETDATE() 
+            SET isOrderClosed = 1, ModifiedOn = GETDATE() ,entry_status='q'
             WHERE Tableno = @TableNo 
             AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
             AND (OrderNumber <> @CurrentOID OR @CurrentOID IS NULL);
@@ -184,9 +184,11 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
       .input("orderId", sql.UniqueIdentifier, orderGuid)
       .input("orderNo", sql.NVarChar(50), cleanOrderNo)
       .input("priority", sql.Int, priorityCode)
+      .input("entry_status", sql.VarChar(5), 'q')
       .query(`
         UPDATE RestaurantOrderCur 
         SET PriorityCode = ISNULL(PriorityCode, @priority),
+        entry_status='q',
             OrderNumber = CASE 
                             WHEN OrderNumber IS NULL OR OrderNumber = '' OR OrderNumber = 'PENDING' OR OrderNumber = 'NEW' OR OrderNumber = '#NEW' OR OrderNumber LIKE 'TEMP-%' THEN @orderNo 
                             ELSE OrderNumber 
@@ -202,7 +204,8 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
       .input("userId", sql.UniqueIdentifier, finalUserId)
       .input("bizId", sql.UniqueIdentifier, bizId)
       .input("priority", sql.Int, priorityCode)
-      .query("INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId, PriorityCode) VALUES (@orderId, @orderNo, GETDATE(), @tableNo, 1, @userId, GETDATE(), 0, @bizId, @priority)");
+      .input("entry_status", sql.VarChar(5), 'q')
+      .query("INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId, PriorityCode, entry_Status) VALUES (@orderId, @orderNo, GETDATE(), @tableNo, 1, @userId, GETDATE(), 0, @bizId, @priority, 'q')");
   }
 
   // 🛡️ GHOST SHIELD: Force-close any OTHER open orders for the same table number to prevent "popping" items.
@@ -210,9 +213,10 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
     await transaction.request()
       .input("orderGuid", sql.UniqueIdentifier, orderGuid)
       .input("tableNo", sql.VarChar(20), actualTableNo)
+      .input("entry_status", sql.VarChar(5), 'q')
       .query(`
         UPDATE RestaurantOrderCur 
-        SET isOrderClosed = 1, ModifiedOn = GETDATE() 
+        SET isOrderClosed = 1, ModifiedOn = GETDATE(), entry_status ='q'
         WHERE Tableno = @tableNo 
         AND (isOrderClosed = 0 OR isOrderClosed IS NULL) 
         AND OrderId <> @orderGuid
