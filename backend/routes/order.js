@@ -255,7 +255,7 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
   String(noteInfo.value || "").substring(0, 100)
 )
         .input("isTakeaway", sql.Bit, takeawayInfo.value ? 1 : 0)
-        .input("isProcessed", sql.Bit, 0)
+        .input("isProcesse", sql.Bit, 0)
         .input("isReady", sql.Bit, 0)
         .input("isDelivered", sql.Bit, 0)
         .query(`
@@ -279,7 +279,7 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
     isTakeAway,
     BusinessUnitId,
     OrderDateTime,
-    isProcessed,
+    isProcesse,
     isReady,
     isDelivered
   )
