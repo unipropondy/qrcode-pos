@@ -63,7 +63,7 @@ async function getOrGenerateOrderId(req, tableId) {
           IF @TableNo IS NOT NULL
           BEGIN
             UPDATE RestaurantOrderCur 
-            SET isOrderClosed = 1, ModifiedOn = GETDATE(),entry_status ='q'
+            SET isOrderClosed = 1, ModifiedOn = GETDATE() 
             WHERE Tableno = @TableNo 
             AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
             AND (OrderNumber <> @CurrentOID OR @CurrentOID IS NULL);
@@ -202,8 +202,7 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
       .input("userId", sql.UniqueIdentifier, finalUserId)
       .input("bizId", sql.UniqueIdentifier, bizId)
       .input("priority", sql.Int, priorityCode)
-      .input("entryStatus", sql.VarChar(5), 'q')
-      .query("INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId, PriorityCode,entry_status) VALUES (@orderId, @orderNo, GETDATE(), @tableNo, 1, @userId, GETDATE(), 0, @bizId, @priority, 'q')");
+      .query("INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId, PriorityCode) VALUES (@orderId, @orderNo, GETDATE(), @tableNo, 1, @userId, GETDATE(), 0, @bizId, @priority)");
   }
 
   // 🛡️ GHOST SHIELD: Force-close any OTHER open orders for the same table number to prevent "popping" items.
@@ -211,10 +210,9 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
     await transaction.request()
       .input("orderGuid", sql.UniqueIdentifier, orderGuid)
       .input("tableNo", sql.VarChar(20), actualTableNo)
-      .input("entryStatus", sql.VarChar(5), 'q')
       .query(`
         UPDATE RestaurantOrderCur 
-        SET isOrderClosed = 1, ModifiedOn = GETDATE(),entry_status ='q'
+        SET isOrderClosed = 1, ModifiedOn = GETDATE() 
         WHERE Tableno = @tableNo 
         AND (isOrderClosed = 0 OR isOrderClosed IS NULL) 
         AND OrderId <> @orderGuid
@@ -1132,10 +1130,13 @@ router.post("/merge", async (req, res) => {
     await transaction.begin();
     
     try {
-      // 0. Ensure target table exists and has a CurrentOrderId with UPDLOCK for concurrency
+      console.log(`[MERGE START] Initiating merge for targetTableId: ${cleanTargetId}`);
+      
+      // 0. Ensure target table exists and has a CurrentOrderId
+      console.log(`[MERGE STEP 1] Checking target table status...`);
       const targetCheck = await transaction.request()
         .input("tid", sql.UniqueIdentifier, cleanTargetId)
-        .query("SELECT TableNumber, CurrentOrderId FROM TableMaster WITH (UPDLOCK) WHERE TableId = @tid");
+        .query("SELECT TableNumber, CurrentOrderId FROM TableMaster WHERE TableId = @tid");
       
       if (targetCheck.recordset.length === 0) {
         throw new Error("Target table not found");
@@ -1143,42 +1144,63 @@ router.post("/merge", async (req, res) => {
       
       const targetTableNo = targetCheck.recordset[0].TableNumber;
       const targetOrderId = targetCheck.recordset[0].CurrentOrderId;
+      console.log(`[MERGE STEP 1 SUCCESS] Target Table: ${targetTableNo}, Active OrderNo: ${targetOrderId}`);
+      
       if (!targetOrderId || targetOrderId === "NEW") {
         throw new Error("Target table has no active order. Add at least one item first.");
       }
 
       // Fetch the target Order Guid
+      console.log(`[MERGE STEP 2] Fetching target Order GUID for OrderNo: ${targetOrderId}`);
       const targetGuidRes = await transaction.request()
         .input("orderNo", sql.NVarChar(50), targetOrderId)
-        .query("SELECT TOP 1 OrderId FROM RestaurantOrderCur WITH (UPDLOCK) WHERE OrderNumber = @orderNo AND isOrderClosed = 0");
+        .query("SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNo AND isOrderClosed = 0");
       const targetOrderGuid = targetGuidRes.recordset[0]?.OrderId;
       if (!targetOrderGuid) {
         throw new Error("Target active order record not found or is already closed.");
       }
+      console.log(`[MERGE STEP 2 SUCCESS] Target Order GUID: ${targetOrderGuid}`);
 
       const io = req.app.get("io");
       
       for (const sourceTableId of sourceTableIds) {
         const cleanSourceId = String(sourceTableId).replace(/^\{|\}$/g, "").trim();
-        if (cleanSourceId === cleanTargetId) continue;
+        if (cleanSourceId === cleanTargetId) {
+          console.log(`[MERGE LOOP] Skipping identical target/source table: ${cleanSourceId}`);
+          continue;
+        }
 
+        console.log(`[MERGE LOOP] Processing sourceTableId: ${cleanSourceId}`);
         const sourceCheck = await transaction.request()
           .input("tid", sql.UniqueIdentifier, cleanSourceId)
-          .query("SELECT TableNumber, CurrentOrderId FROM TableMaster WITH (UPDLOCK) WHERE TableId = @tid");
+          .query("SELECT TableNumber, CurrentOrderId FROM TableMaster WHERE TableId = @tid");
         
-        if (sourceCheck.recordset.length === 0) continue;
+        if (sourceCheck.recordset.length === 0) {
+          console.log(`[MERGE LOOP ERROR] Source table not found: ${cleanSourceId}`);
+          continue;
+        }
         const sourceTableNo = sourceCheck.recordset[0].TableNumber;
         const sourceOrderId = sourceCheck.recordset[0].CurrentOrderId;
-        if (!sourceOrderId || sourceOrderId === "NEW") continue;
+        console.log(`[MERGE LOOP] Source Table: ${sourceTableNo}, Active OrderNo: ${sourceOrderId}`);
+        if (!sourceOrderId || sourceOrderId === "NEW") {
+          console.log(`[MERGE LOOP SKIP] Source table has no active order.`);
+          continue;
+        }
 
         // Fetch source order guid
+        console.log(`[MERGE LOOP] Fetching source Order GUID for OrderNo: ${sourceOrderId}`);
         const sourceGuidRes = await transaction.request()
           .input("orderNo", sql.NVarChar(50), sourceOrderId)
           .query("SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE OrderNumber = @orderNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL)");
         const sourceOrderGuid = sourceGuidRes.recordset[0]?.OrderId;
-        if (!sourceOrderGuid) continue;
+        if (!sourceOrderGuid) {
+          console.log(`[MERGE LOOP ERROR] Active source order GUID not found.`);
+          continue;
+        }
+        console.log(`[MERGE LOOP SUCCESS] Source Order GUID: ${sourceOrderGuid}`);
 
         // A. Insert merge relationship
+        console.log(`[MERGE LOOP] Inserting merge relationship history...`);
         await transaction.request()
           .input("parentOid", sql.UniqueIdentifier, targetOrderGuid)
           .input("childOid", sql.UniqueIdentifier, sourceOrderGuid)
@@ -1191,6 +1213,7 @@ router.post("/merge", async (req, res) => {
           `);
 
         // B. Re-point items to target order
+        console.log(`[MERGE LOOP] Re-pointing modifiers and items from source to target Order GUID: ${targetOrderGuid}...`);
         await transaction.request()
           .input("parentOid", sql.UniqueIdentifier, targetOrderGuid)
           .input("parentOrderNo", sql.NVarChar(100), targetOrderId)
@@ -1206,12 +1229,12 @@ router.post("/merge", async (req, res) => {
             UPDATE RestaurantOrderDetailCur
             SET OrderId = @parentOid,
                 OrderNumber = @parentOrderNo,
-                Tableno = @parentTableNo,
                 ModifiedOn = GETDATE()
             WHERE OrderId = @childOid;
           `);
 
         // C. Close source order
+        console.log(`[MERGE LOOP] Closing source order GUID: ${sourceOrderGuid}...`);
         await transaction.request()
           .input("childOid", sql.UniqueIdentifier, sourceOrderGuid)
           .query(`
@@ -1223,6 +1246,7 @@ router.post("/merge", async (req, res) => {
           `);
 
         // D. Clear source table & persistent CartItems
+        console.log(`[MERGE LOOP] Clearing source table cart items and master status...`);
         await transaction.request()
           .input("cartId", sql.NVarChar(128), cleanSourceId)
           .query("DELETE FROM [dbo].[CartItems] WHERE [CartId] = @cartId");
@@ -1232,6 +1256,7 @@ router.post("/merge", async (req, res) => {
           .query("UPDATE TableMaster SET Status = 0, TotalAmount = 0, StartTime = NULL, CurrentOrderId = NULL WHERE TableId = @tid");
 
         // E. Emit source socket events immediately
+        console.log(`[MERGE LOOP] Broadcasting source table update events...`);
         if (io) {
           io.emit("table_status_updated", { tableId: cleanSourceId.toLowerCase(), status: 0, totalAmount: 0 });
           io.emit("cart_updated", { tableId: cleanSourceId.toLowerCase() });
@@ -1240,18 +1265,23 @@ router.post("/merge", async (req, res) => {
       }
 
       // 2. Calculate Combined Total for Target Order
+      console.log(`[MERGE STEP 3] Calculating combined total for target Order GUID: ${targetOrderGuid}`);
       const combinedTotalRes = await transaction.request()
         .input("parentOid", sql.UniqueIdentifier, targetOrderGuid)
         .query("SELECT SUM(TotalDetailLineAmount) as Total FROM RestaurantOrderDetailCur WHERE OrderId = @parentOid AND StatusCode <> 0");
       const targetCombinedTotal = combinedTotalRes.recordset[0].Total || 0;
+      console.log(`[MERGE STEP 3 SUCCESS] Combined Total: ${targetCombinedTotal}`);
 
       // 3. Update Target Table Master Total
+      console.log(`[MERGE STEP 4] Updating target TableMaster total to: ${targetCombinedTotal}`);
       await transaction.request()
         .input("tid", sql.UniqueIdentifier, cleanTargetId)
         .input("total", sql.Decimal(18, 2), targetCombinedTotal)
         .query("UPDATE TableMaster SET TotalAmount = @total WHERE TableId = @tid");
 
+      console.log(`[MERGE STEP 5] Committing SQL transaction...`);
       await transaction.commit();
+      console.log(`[MERGE STEP 5 SUCCESS] SQL transaction committed successfully.`);
 
       // 4. Emit target socket events
       if (io) {
@@ -1261,6 +1291,7 @@ router.post("/merge", async (req, res) => {
 
       res.json({ success: true, totalAmount: targetCombinedTotal });
     } catch (err) {
+      console.error(`[MERGE TRANSACTION ERROR] rolling back... Error: ${err.message}`);
       if (transaction._isStarted) await transaction.rollback();
       throw err;
     }
