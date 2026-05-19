@@ -168,8 +168,8 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
   toGuidOrNull(finalUserId) || DEFAULT_GUID
 )
 .input("bizId", sql.UniqueIdentifier, bizId)
-.input("entryStatus", sql.NVarChar(20), "q")
-.query("INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId,entry_status) VALUES (@orderId, @orderNo, GETDATE(), LTRIM(RTRIM(@tableNo)), 1, @userId, GETDATE(), 0, @bizId, @entryStatus)");
+.input("entry_Status", sql.NVarChar(20), "q")
+.query("INSERT INTO RestaurantOrderCur (OrderId, OrderNumber, OrderDateTime, Tableno, StatusCode, CreatedBy, CreatedOn, isOrderClosed, BusinessUnitId,entry_Status) VALUES (@orderId, @orderNo, GETDATE(), LTRIM(RTRIM(@tableNo)), 1, @userId, GETDATE(), 0, @bizId, 'q')");
   }
   for (const item of items) {
     const cleanProdId = String(item.id || item.ProductId || DEFAULT_GUID).replace(/^\{|\}$/g, "").trim();
@@ -283,8 +283,8 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
   }
   await transaction.request()
   .input("orderId", sql.UniqueIdentifier, orderGuid)
-  .input("entryStatus", sql.NVarChar(20), "q")
- .query("UPDATE RestaurantOrderCur SET TotalAmount = (SELECT ISNULL(SUM(ActualAmount), 0),entryStatus='q' FROM RestaurantOrderDetailCur WHERE OrderId = @orderId) WHERE OrderId = @orderId");
+  .input("entry_Status", sql.NVarChar(20), "q")
+ .query("UPDATE RestaurantOrderCur SET TotalAmount = (SELECT ISNULL(SUM(ActualAmount), 0),entry_Status='q' FROM RestaurantOrderDetailCur WHERE OrderId = @orderId) WHERE OrderId = @orderId");
 }
 
 async function syncTableStatus(req, tableId) {
