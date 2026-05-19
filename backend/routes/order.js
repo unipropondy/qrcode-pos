@@ -161,11 +161,10 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
       -- 🛡️ SHIELD: Find the DEFINITIVE active order for this table/number
       SELECT TOP 1 OrderId, Tableno, BusinessUnitId, OrderNumber
       FROM RestaurantOrderCur WITH (UPDLOCK)
-      WHERE OrderNumber = @orderNo 
-      OR (Tableno = @ActualTableNo AND (isOrderClosed = 0 OR isOrderClosed IS NULL)) 
-      ORDER BY 
-        CASE WHEN OrderNumber = @orderNo THEN 0 ELSE 1 END,
-        CreatedOn DESC;
+      WHERE Tableno = @ActualTableNo
+      AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
+      AND entry_status = 'q'
+      ORDER BY CreatedOn DESC;
       
       SELECT @ActualTableNo as ActualTableNo, @PriorityCode as PriorityCode;
     `);
