@@ -159,11 +159,10 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
       ELSE IF @Section = 4 SET @PriorityCode = 4
 
       -- 🛡️ SHIELD: Find the DEFINITIVE active order for this table/number
-      SELECT TOP 1 OrderId, Tableno, BusinessUnitId, OrderNumber
-      FROM RestaurantOrderCur WITH (UPDLOCK)
-      WHERE Tableno = @ActualTableNo
-      AND (isOrderClosed = 0 OR isOrderClosed IS NULL)
-      AND entry_status = 'q'
+    SELECT TOP 1 OrderId, Tableno, BusinessUnitId, OrderNumber
+      FROM RestaurantOrderCur WITH (UPDLOCK, HOLDLOCK)
+      WHERE LTRIM(RTRIM(Tableno)) = LTRIM(RTRIM(@ActualTableNo))
+      AND ISNULL(isOrderClosed,0) = 0
       ORDER BY CreatedOn DESC;
       
       SELECT @ActualTableNo as ActualTableNo, @PriorityCode as PriorityCode;
@@ -212,10 +211,10 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
     await transaction.request()
       .input("orderGuid", sql.UniqueIdentifier, orderGuid)
       .input("tableNo", sql.VarChar(20), actualTableNo)
-      .input("entry_status", sql.VarChar(5), 'q')
+     
       .query(`
         UPDATE RestaurantOrderCur 
-        SET isOrderClosed = 1, ModifiedOn = GETDATE(), entry_status ='q'
+        SET isOrderClosed = 1, ModifiedOn = GETDATE()
         WHERE Tableno = @tableNo 
         AND (isOrderClosed = 0 OR isOrderClosed IS NULL) 
         AND OrderId <> @orderGuid
