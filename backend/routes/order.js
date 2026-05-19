@@ -580,6 +580,7 @@ if (
         .query(`
           UPDATE TableMaster 
           SET Status = 1, 
+              entry_status ='q',
               CurrentOrderId = @oid,
               StartTime = CASE WHEN StartTime IS NULL OR StartTime < '2000-01-01' THEN GETDATE() ELSE StartTime END,
               ModifiedOn = GETDATE()
