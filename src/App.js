@@ -1,10 +1,14 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 // import axios from "axios";
 import "./App.css";
 import { BASE_URL } from "./Configs/api";
 import { QRCodeSVG } from "qrcode.react";
 
 function App() {
+
+  const skipSaveRef = useRef(false);
+  const deleteInProgressRef = useRef(false);
+  const refreshTimeoutRef = useRef(null);
 
   const API = `${BASE_URL}/api`;
   const [search, setSearch] = useState("");
@@ -60,10 +64,10 @@ function App() {
       try {
         const res = await fetch(`${API}/paymodes/qrs`);
         const data = await res.json();
-  if (data.paynow) {
-  setPaynowUpiId(data.paynow);
-  setTempPaynowUpiId(data.paynow);
-}
+        if (data.paynow) {
+          setPaynowUpiId(data.paynow);
+          setTempPaynowUpiId(data.paynow);
+        }
         if (data.upi) { setUpiUpiId(data.upi); setTempUpiUpiId(data.upi); }
       } catch (err) {
         console.log("FETCH QRS ERROR:", err);
@@ -92,6 +96,11 @@ function App() {
   useEffect(() => {
 
     if (!tableNo) return;
+
+    if (skipSaveRef.current) {
+      skipSaveRef.current = false;
+      return;
+    }
 
     saveCartToBackend();
 
@@ -218,13 +227,13 @@ function App() {
 
   };
 
-  const increaseQty = (cartId) => {
+  const increaseQty = (index) => {
 
     setCart((prev) =>
 
-      prev.map((item) =>
+      prev.map((item, i) =>
 
-        item.cartId === cartId
+        i === index
           ? {
             ...item,
             qty: (item.qty || 1) + 1,
@@ -234,63 +243,83 @@ function App() {
     );
   };
 
-  const decreaseQty = async (cartId) => {
+  const decreaseQty = async (index) => {
 
-  const item = cart.find((x) => x.cartId === cartId);
+    const item = cart[index];
+    if (!item) return;
 
-  // qty = 1 → delete from DB
-  if ((item?.qty || 1) <= 1) {
+    let currentQty = Number(item.qty);
+    if (isNaN(currentQty)) currentQty = 1;
 
-    try {
+    // qty = 1 → delete from DB
+    if (currentQty <= 1) {
 
-      await fetch(
-        `${API}/order/delete-cart-item`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+      deleteInProgressRef.current = true;
 
-         body: JSON.stringify({
+      // Optimistic UI update: reliably remove by exact index
+      setCart((prev) => {
+        const newCart = [...prev];
+        newCart.splice(index, 1);
+        return newCart;
+      });
 
-            tableId: tableId,
+      try {
+        let actualLineItemId = item.lineItemId || item.OrderDetailId;
 
-            lineItemId:
-              item.lineItemId ||
-              item.OrderDetailId ||
-              item.cartId,
-
-          }),
+        // If it's a newly added item, wait for it to be saved to DB to get its real ID
+        if (!actualLineItemId && tableId) {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              const cartRes = await fetch(`${API}/order/cart/${tableId}`);
+              const cartData = await cartRes.json();
+              const match = cartData?.items?.find(b => (b.DishId || b.id) == (item.DishId || item.id));
+              if (match && (match.OrderDetailId || match.lineItemId)) {
+                actualLineItemId = match.OrderDetailId || match.lineItemId;
+                break;
+              }
+            } catch (e) {}
+            // wait 1 second before retrying
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         }
-      );
 
-    } catch (err) {
+        // Only send delete request if we have a valid database ID.
+        // Sending a UUID causes a backend 500 error.
+        if (actualLineItemId) {
+          await fetch(
+            `${API}/order/delete-cart-item`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                tableId: tableId,
+                lineItemId: actualLineItemId,
+              }),
+            }
+          );
+        }
+        
+      } catch (err) {
+        console.log("DELETE ITEM ERROR:", err);
+      } finally {
+        setTimeout(() => {
+          deleteInProgressRef.current = false;
+        }, 500); // allow buffer for saveCartToBackend to finish
+      }
 
-      console.log("DELETE ITEM ERROR:", err);
-
+      return;
     }
 
-    // remove from screen
-    setCart((prev) =>
-      prev.filter((x) => x.cartId !== cartId)
-    );
+    // decrease qty
+    setCart((prev) => {
+      const newCart = [...prev];
+      newCart[index] = { ...newCart[index], qty: currentQty - 1 };
+      return newCart;
+    });
 
-    return;
-  }
-
-  // decrease qty
-  setCart((prev) =>
-    prev.map((x) =>
-      x.cartId === cartId
-        ? {
-            ...x,
-            qty: (x.qty || 1) - 1,
-          }
-        : x
-    )
-  );
-
-};
+  };
 
   const saveCartToBackend = async () => {
 
@@ -315,9 +344,9 @@ function App() {
           price: item.Price || item.price || 0,
 
           modifiers: (item.selectedMods || []).filter(
-  (m) =>
-    /^[0-9a-fA-F-]{36}$/.test(m.ModifierID)
-),
+            (m) =>
+              /^[0-9a-fA-F-]{36}$/.test(m.ModifierID)
+          ),
 
           note: item.note || "",
 
@@ -342,6 +371,42 @@ function App() {
 
       if (data.orderId) {
         setCurrentOrderId(data.orderId);
+      }
+
+      // Silently sync real OrderDetailIds for new items without overwriting optimistic quantities
+      if (tableId && !deleteInProgressRef.current) {
+        try {
+          const cartRes = await fetch(`${API}/order/cart/${tableId}`);
+          const cartData = await cartRes.json();
+          
+          if (cartData && cartData.items) {
+            setCart(prev => {
+              let changed = false;
+              const updatedCart = prev.map(item => {
+                if (!item.OrderDetailId && !item.lineItemId) {
+                  const match = cartData.items.find(b => b.DishId == (item.DishId || item.id));
+                  if (match && (match.OrderDetailId || match.lineItemId)) {
+                    changed = true;
+                    return { 
+                      ...item, 
+                      OrderDetailId: match.OrderDetailId || match.lineItemId, 
+                      lineItemId: match.OrderDetailId || match.lineItemId 
+                    };
+                  }
+                }
+                return item;
+              });
+              
+              if (changed) {
+                skipSaveRef.current = true;
+                return updatedCart;
+              }
+              return prev;
+            });
+          }
+        } catch (syncErr) {
+          console.log("Silent ID sync error:", syncErr);
+        }
       }
 
     } catch (err) {
@@ -373,15 +438,15 @@ function App() {
           price: item.Price || item.price || 0,
 
           modifiers: (item.selectedMods || [])
-        .filter((m) =>
-          /^[0-9a-fA-F-]{36}$/.test(m.ModifierID)
-        )
-        .map((m) => ({
-          ModifierId: m.ModifierID,
-          ModifierName: m.ModifierName,
-          Price: m.Price || 0,
-          qty: 1,
-        })),
+            .filter((m) =>
+              /^[0-9a-fA-F-]{36}$/.test(m.ModifierID)
+            )
+            .map((m) => ({
+              ModifierId: m.ModifierID,
+              ModifierName: m.ModifierName,
+              Price: m.Price || 0,
+              qty: 1,
+            })),
 
           note: item.note || "",
 
@@ -449,6 +514,7 @@ function App() {
             item.modifiers || [],
         }));
 
+        skipSaveRef.current = true;
         setCart(formatted);
       }
 
@@ -790,7 +856,16 @@ function App() {
             <span className="cart-table-no">
               Table No:{tableNo || "1"}
             </span>
-            <span className="cart-sync">• Syncing</span>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+              <button 
+                onClick={() => tableId && loadCart(tableId)}
+                style={{ background: 'none', border: '1px solid #ddd', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                title="Refresh Cart"
+              >
+                ↻ Refresh
+              </button>
+              <span className="cart-sync">• Syncing</span>
+            </div>
           </div>
 
           {cart.length === 0 ? (
@@ -825,7 +900,7 @@ function App() {
                         <button
                           className="qty-btn"
                           onClick={() =>
-                            decreaseQty(item.cartId)
+                            decreaseQty(index)
                           }
                           disabled={item.status === "SENT"}
                           style={{ opacity: item.status === "SENT" ? 0.5 : 1 }}
@@ -840,7 +915,7 @@ function App() {
                         <button
                           className="qty-btn"
                           onClick={() =>
-                            increaseQty(item.cartId)
+                            increaseQty(index)
                           }
                           disabled={item.status === "SENT"}
                           style={{ opacity: item.status === "SENT" ? 0.5 : 1 }}
@@ -1150,17 +1225,17 @@ function App() {
                   onClick={async () => {
 
                     try {
-                    console.log("CURRENT ORDER ID:", currentOrderId);
+                      console.log("CURRENT ORDER ID:", currentOrderId);
                       const res = await fetch(`${API}/sales/save`, {
                         method: "POST",
                         headers: {
                           "Content-Type": "application/json",
                         },
-                         body: JSON.stringify({
+                        body: JSON.stringify({
 
                           orderId:
                             currentOrderId &&
-                            currentOrderId !== "null"
+                              currentOrderId !== "null"
                               ? currentOrderId
                               : "00000000-0000-0000-0000-000000000000",
 
@@ -1169,10 +1244,10 @@ function App() {
                           tableId: tableId,
 
                           subTotal: Number(totalAmount),
-                          
+
 
                           totalAmount: Number(totalAmount),
-                          
+
                           paymentMethod: "PAYNOW",
 
                           items: cart.map((item) => ({
@@ -1292,26 +1367,26 @@ function App() {
               {/* Dynamic QR */}
               <div style={{ alignItems: 'center', marginBottom: '16px', display: 'flex', flexDirection: 'column' }}>
                 <div style={{ width: '150px', height: '150px', backgroundColor: '#fff', borderRadius: '16px', boxShadow: '0 2px 10px rgba(0,0,0,0.05)', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', border: '1px solid #f0f0f0', display: 'flex' }}>
-               <img
-                src={
-                  paynowUpiId?.startsWith("data:")
-                    ? paynowUpiId
-                    : paynowUpiId?.startsWith("/9j/")
-                    ? `data:image/jpeg;base64,${paynowUpiId}`
-                    : `data:image/png;base64,${paynowUpiId}`
-                }
-                alt="PayNow QR"
-                style={{
-                  width: "130px",
-                  height: "130px",
-                  objectFit: "contain"
-                }}
-              />
+                  <img
+                    src={
+                      paynowUpiId?.startsWith("data:")
+                        ? paynowUpiId
+                        : paynowUpiId?.startsWith("/9j/")
+                          ? `data:image/jpeg;base64,${paynowUpiId}`
+                          : `data:image/png;base64,${paynowUpiId}`
+                    }
+                    alt="PayNow QR"
+                    style={{
+                      width: "130px",
+                      height: "130px",
+                      objectFit: "contain"
+                    }}
+                  />
                 </div>
                 <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '8px', fontWeight: '500', textAlign: 'center' }}>
                   Scan this QR and pay {totalAmount} exactly
                 </div>
-               <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '2px' }}>
+                <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '2px' }}>
                   Scan using PayNow / UPI App
                 </div>
               </div>
@@ -1421,12 +1496,12 @@ function App() {
 
                     const reader = new FileReader();
 
-                   reader.onloadend = () => {
+                    reader.onloadend = () => {
 
-  const base64 = reader.result.split(",")[1];
+                      const base64 = reader.result.split(",")[1];
 
-  setTempPaynowUpiId(base64);
-};
+                      setTempPaynowUpiId(base64);
+                    };
 
                     if (file) {
                       reader.readAsDataURL(file);
