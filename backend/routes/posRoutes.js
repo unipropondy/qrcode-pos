@@ -200,5 +200,74 @@ router.post("/order/add", async (req, res) => {
   }
 });
 
+/* ================= PAYMODES ================= */
+router.get("/paymodes/qrs", async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query(`
+      SELECT PayMode, PaymodeImage FROM PAYMODE 
+      WHERE PayMode IN ('PAYNOW    ', 'UPI       ')
+    `);
+
+    const qrs = {};
+
+result.recordset.forEach(row => {
+
+if (row.PayMode.trim() === 'PAYNOW') {
+  qrs.paynow = row.PaymodeImage
+    ? row.PaymodeImage.toString("base64")
+    : "";
+}
+
+if (row.PayMode.trim() === 'UPI') {
+  qrs.upi = row.PaymodeImage
+    ? row.PaymodeImage.toString("base64")
+    : "";
+}
+
+});
+
+    res.json(qrs);
+  } catch (err) {
+    console.error("GET QRS ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post("/paymodes/update-qr", async (req, res) => {
+  try {
+
+    const pool = await poolPromise;
+
+    const { payMode, upiId } = req.body;
+
+    let dbPayMode = '';
+
+    if (payMode === 'paynow')
+      dbPayMode = 'PAYNOW    ';
+    else if (payMode === 'upi')
+      dbPayMode = 'UPI       ';
+    else
+      return res.status(400).json({ error: "Invalid payMode" });
+
+    await pool.request()
+      .input("PayMode", dbPayMode)
+      .input("Image", Buffer.from(upiId, "base64"))
+      .query(`
+        UPDATE PAYMODE
+        SET PaymodeImage = @Image
+        WHERE PayMode = @PayMode
+      `);
+
+    res.json({ success: true });
+
+  } catch (err) {
+
+    console.error("UPDATE QR ERROR:", err);
+
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /* LAST LINE */
 module.exports = router;

@@ -210,22 +210,22 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
         .input("cost", sql.Decimal(18, 2), unitPrice)
         .input("statusCode", sql.Int, currentStatusCode)
         .input(
-  "userId",
-  sql.UniqueIdentifier,
-  toGuidOrNull(finalUserId) || DEFAULT_GUID
-)
+          "userId",
+          sql.UniqueIdentifier,
+          toGuidOrNull(finalUserId) || DEFAULT_GUID
+        )
         .input("mods", sql.NVarChar(sql.MAX), modsJSON)
         .input(
-  "orderNo",
-  sql.NVarChar(20),
-  String(cleanOrderNo).substring(0, 20)
-)
+          "orderNo",
+          sql.NVarChar(20),
+          String(cleanOrderNo).substring(0, 20)
+        )
         .input("dishName", sql.NVarChar(200), dishName)
         .input(
-  "note",
-  sql.NVarChar(100),
-  String(noteInfo.value || "").substring(0, 100)
-)
+            "note",
+            sql.NVarChar(100),
+            String(noteInfo.value || "").substring(0, 100)
+          )
         .input("isTakeaway", sql.Bit, takeawayInfo.value ? 1 : 0)
         .query("UPDATE RestaurantOrderDetailCur SET Quantity = @qty, PricePerUnit = @cost, ActualAmount = @cost * @qty, TotalDetailLineAmount = @cost * @qty, StatusCode = CASE WHEN @statusCode = 0 THEN 0 ELSE (CASE WHEN @statusCode > StatusCode THEN @statusCode ELSE StatusCode END) END, Description = @dishName, DishName = @dishName, ModifiedBy = @userId, ModifiedOn = GETDATE(), ModifiersJSON = @mods, OrderNumber = @orderNo, Remarks = @note, isTakeAway = @isTakeaway WHERE OrderDetailId = @detailId");
     } else {
@@ -1018,6 +1018,45 @@ router.post("/log-print", async (req, res) => {
     await pool.request().input("oid", sql.UniqueIdentifier, orderId && orderId.length > 30 ? orderId : null).input("ono", sql.VarChar(50), orderNumber).input("pt", sql.Int, printType || 1).query("INSERT INTO PrintReport (OrderId, Ordernumber, PrintType, orderDate) VALUES (@oid, @ono, @pt, GETDATE())");
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post("/delete-cart-item", async (req, res) => {
+
+  try {
+
+    const { lineItemId } = req.body;
+
+    if (!lineItemId) {
+      return res.status(400).json({
+        success: false,
+        error: "lineItemId missing"
+      });
+    }
+
+    const pool = await poolPromise;
+
+    await pool.request()
+      .input("detailId", sql.UniqueIdentifier, lineItemId)
+      .query(`
+        DELETE FROM RestaurantOrderDetailCur
+        WHERE OrderDetailId = @detailId
+      `);
+
+    res.json({
+      success: true
+    });
+
+  } catch (err) {
+
+    console.log("DELETE CART ITEM ERROR:", err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+
+  }
+
 });
 
 module.exports = router;

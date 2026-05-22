@@ -2,27 +2,44 @@ import React, { useState, useEffect } from "react";
 // import axios from "axios";
 import "./App.css";
 import { BASE_URL } from "./Configs/api";
+import { QRCodeSVG } from "qrcode.react";
 
 function App() {
 
-   const API = `${BASE_URL}/api`;
+  const API = `${BASE_URL}/api`;
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState([]);
 
   // Navigation states
- const [categories, setCategories] = useState([]);
-const [groups, setGroups] = useState([]);
-const [dishes, setDishes] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [dishes, setDishes] = useState([]);
 
-const [activeCategory, setActiveCategory] = useState(null);
-const [activeGroup, setActiveGroup] = useState(null);
-const [tableNo, setTableNo] = useState("");
-const [tableId, setTableId] = useState("");
+  const [activeCategory, setActiveCategory] = useState(null);
+  const [activeGroup, setActiveGroup] = useState(null);
+  const [tableNo, setTableNo] = useState("");
+  const [tableId, setTableId] = useState("");
 
-const [currentOrderId, setCurrentOrderId] = useState(null);
+  const [currentOrderId, setCurrentOrderId] = useState(null);
 
-const [showPaymentPopup, setShowPaymentPopup] = useState(false);
+  const [showPaymentPopup, setShowPaymentPopup] = useState(false);
+  const [showOnlinePayment, setShowOnlinePayment] = useState(false);
+  const [showPayNowModal, setShowPayNowModal] = useState(false);
+  const [showUpiModal, setShowUpiModal] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("");
 
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [paynowUpiId, setPaynowUpiId] = useState('');
+  const [upiUpiId, setUpiUpiId] = useState('');
+  const [tempPaynowUpiId, setTempPaynowUpiId] = useState('');
+  const [tempUpiUpiId, setTempUpiUpiId] = useState('');
+
+  const handlePaymentSuccess = (msg) => {
+    setCart((prev) => prev.map((item) => ({ ...item, status: "SENT" })));
+    setShowPaymentPopup(false);
+    setSuccessMessage(msg);
+    setTimeout(() => setSuccessMessage(""), 3000);
+  };
 
 
   // Modal states
@@ -37,83 +54,98 @@ const [showPaymentPopup, setShowPaymentPopup] = useState(false);
   const [customItemPrice, setCustomItemPrice] = useState("");
   const [customMods, setCustomMods] = useState([]);
 
-useEffect(() => {
+  useEffect(() => {
 
-  loadKitchens();
-
-  const params = new URLSearchParams(window.location.search);
-
- const table = params.get("table");
-const tid = params.get("tableId");
-
-if (table) {
-  setTableNo(table);
+    const fetchQRs = async () => {
+      try {
+        const res = await fetch(`${API}/paymodes/qrs`);
+        const data = await res.json();
+  if (data.paynow) {
+  setPaynowUpiId(data.paynow);
+  setTempPaynowUpiId(data.paynow);
 }
+        if (data.upi) { setUpiUpiId(data.upi); setTempUpiUpiId(data.upi); }
+      } catch (err) {
+        console.log("FETCH QRS ERROR:", err);
+      }
+    };
+    fetchQRs();
 
-if (tid) {
-  setTableId(tid);
-  loadCart(tid);
-}
+    loadKitchens();
 
-}, []);
+    const params = new URLSearchParams(window.location.search);
 
-useEffect(() => {
+    const table = params.get("table");
+    const tid = params.get("tableId");
 
-  if (!tableNo) return;
-
-  saveCartToBackend();
-
-}, [cart]);
-
-const loadKitchens = async () => {
-  try {
-    const res = await fetch(`${API}/kitchens`);
-    const data = await res.json();
-
-    setCategories(data);
-
-    if (data.length > 0) {
-      setActiveCategory(data[0].CategoryId);
-      loadGroups(data[0].CategoryId);
+    if (table) {
+      setTableNo(table);
     }
-  } catch (err) {
-    console.log(err);
-  }
-};
 
-const loadGroups = async (categoryId) => {
-  try {
-    const res = await fetch(`${API}/dishgroups/${categoryId}`);
-    const data = await res.json();
-
-    setGroups(data);
-
-    if (data.length > 0) {
-      setActiveGroup(data[0].DishGroupId);
-      loadDishes(data[0].DishGroupId);
+    if (tid) {
+      setTableId(tid);
+      loadCart(tid);
     }
-  } catch (err) {
-    console.log(err);
-  }
-};
 
-const loadDishes = async (groupId) => {
-  try {
-    const res = await fetch(`${API}/dishes/group/${groupId}`);
-    const data = await res.json();
+  }, []);
 
-    setDishes(data);
-  } catch (err) {
-    console.log(err);
-  }
-};
+  useEffect(() => {
 
- const filteredItems = dishes.filter((dish) =>
-  dish.Name?.toLowerCase().includes(search.toLowerCase())
-);
+    if (!tableNo) return;
+
+    saveCartToBackend();
+
+  }, [cart]);
+
+  const loadKitchens = async () => {
+    try {
+      const res = await fetch(`${API}/kitchens`);
+      const data = await res.json();
+
+      setCategories(data);
+
+      if (data.length > 0) {
+        setActiveCategory(data[0].CategoryId);
+        loadGroups(data[0].CategoryId);
+      }
+    } catch (err) {
+      console.log(err);
+    }
+  };
+
+  const loadGroups = async (categoryId) => {
+    try {
+      const res = await fetch(`${API}/dishgroups/${categoryId}`);
+      const data = await res.json();
+
+      setGroups(data);
+
+      if (data.length > 0) {
+        setActiveGroup(data[0].DishGroupId);
+        loadDishes(data[0].DishGroupId);
+      }
+    } catch (err) {
+      console.log(err);
+    }
+  };
+
+  const loadDishes = async (groupId) => {
+    try {
+      const res = await fetch(`${API}/dishes/group/${groupId}`);
+      const data = await res.json();
+
+      setDishes(data);
+    } catch (err) {
+      console.log(err);
+    }
+  };
+
+  const filteredItems = dishes.filter((dish) =>
+    dish.Name?.toLowerCase().includes(search.toLowerCase())
+  );
 
   const openModifiers = (dish) => {
-   if (dish.HasModifier) {
+    if (dish.HasModifier) {
       setSelectedDish(dish);
       loadModifiers(dish.DishId);
       setSelectedModifierIds([]);
@@ -123,254 +155,312 @@ const loadDishes = async (groupId) => {
       addToCartSimple(dish);
     }
   };
-  
-const loadModifiers = async (dishId) => {
-  try {
-    const res = await fetch(`${API}/modifiers/${dishId}`);
-    const data = await res.json();
 
-    const hasOpen = data.some(
-  (m) =>
-    m.ModifierName?.toUpperCase() === "OPEN"
-   );
+  const loadModifiers = async (dishId) => {
+    try {
+      const res = await fetch(`${API}/modifiers/${dishId}`);
+      const data = await res.json();
 
-if (!hasOpen) {
-  data.push({
-    ModifierID: "open",
-    ModifierName: "OPEN",
-    Price: 0,
-  });
-}
+      const hasOpen = data.some(
+        (m) =>
+          m.ModifierName?.toUpperCase() === "OPEN"
+      );
 
-setModifiers(data);
-  } catch (err) {
-    console.log(err);
-  }
-};
-const addToCartSimple = async (dish) => {
+      if (!hasOpen) {
+        data.push({
+          ModifierID: "open",
+          ModifierName: "OPEN",
+          Price: 0,
+        });
+      }
 
-  setCart((prev) => {
+      setModifiers(data);
+    } catch (err) {
+      console.log(err);
+    }
+  };
+  const addToCartSimple = async (dish) => {
 
-    const existing = prev.find(
-      (item) =>
-        (item.DishId || item.id) === dish.DishId
-    );
+    setCart((prev) => {
 
-    // already exists
-    if (existing) {
-      return prev.map((item) =>
-        (item.DishId || item.id) === dish.DishId
-          ? {
+      const existing = prev.find(
+        (item) =>
+          (item.DishId || item.id) === dish.DishId
+      );
+
+      // already exists
+      if (existing) {
+        return prev.map((item) =>
+          (item.DishId || item.id) === dish.DishId
+            ? {
               ...item,
               qty: (item.qty || 1) + 1,
             }
-          : item
-      );
-    }
-
-    // new item
-    return [
-      ...prev,
-          {
-        ...dish,
-        cartId: crypto.randomUUID(),
-
-        qty: 1,
-
-        selectedMods: [],
-
-        finalPrice: Number(dish.Price || 0),
+            : item
+        );
       }
-    ];
-  });
 
-};
+      // new item
+      return [
+        ...prev,
+        {
+          ...dish,
+          cartId: crypto.randomUUID(),
 
-const increaseQty = (cartId) => {
+          qty: 1,
 
-  setCart((prev) =>
+          selectedMods: [],
 
-    prev.map((item) =>
+          finalPrice: Number(dish.Price || 0),
+        }
+      ];
+    });
 
-      item.cartId === cartId
-        ? {
-            ...item,
-            qty: (item.qty || 1) + 1,
-          }
-        : item
-    )
-  );
-};
+  };
 
-const decreaseQty = (cartId) => {
+  const increaseQty = (cartId) => {
 
-  setCart((prev) =>
+    setCart((prev) =>
 
-    prev
-      .map((item) =>
+      prev.map((item) =>
 
         item.cartId === cartId
           ? {
-              ...item,
-              qty: (item.qty || 1) - 1,
-            }
+            ...item,
+            qty: (item.qty || 1) + 1,
+          }
           : item
       )
+    );
+  };
 
-      .filter((item) => item.qty > 0)
+  const decreaseQty = async (cartId) => {
+
+  const item = cart.find((x) => x.cartId === cartId);
+
+  // qty = 1 → delete from DB
+  if ((item?.qty || 1) <= 1) {
+
+    try {
+
+      await fetch(
+        `${API}/order/delete-cart-item`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+
+         body: JSON.stringify({
+
+            tableId: tableId,
+
+            lineItemId:
+              item.lineItemId ||
+              item.OrderDetailId ||
+              item.cartId,
+
+          }),
+        }
+      );
+
+    } catch (err) {
+
+      console.log("DELETE ITEM ERROR:", err);
+
+    }
+
+    // remove from screen
+    setCart((prev) =>
+      prev.filter((x) => x.cartId !== cartId)
+    );
+
+    return;
+  }
+
+  // decrease qty
+  setCart((prev) =>
+    prev.map((x) =>
+      x.cartId === cartId
+        ? {
+            ...x,
+            qty: (x.qty || 1) - 1,
+          }
+        : x
+    )
   );
+
 };
 
-const saveCartToBackend = async () => {
+  const saveCartToBackend = async () => {
 
-  try {
+    try {
 
-    const payload = {
+      const payload = {
 
-      tableId: tableId,
+        tableId: tableId,
 
-      orderId: currentOrderId,
+        orderId: currentOrderId,
 
-      userId: "00000000-0000-0000-0000-000000000000",
+        userId: "00000000-0000-0000-0000-000000000000",
 
-      items: cart.map((item) => ({
+        items: cart.map((item) => ({
 
-        id: item.DishId || item.id,
+          id: item.DishId || item.id,
 
-        name: item.Name || item.name,
+          name: item.Name || item.name,
 
-        qty: item.qty || 1,
+          qty: item.qty || 1,
 
-        price: item.Price || item.price || 0,
+          price: item.Price || item.price || 0,
 
-        modifiers: item.selectedMods || [],
+          modifiers: (item.selectedMods || []).filter(
+  (m) =>
+    /^[0-9a-fA-F-]{36}$/.test(m.ModifierID)
+),
 
-        note: item.note || "",
+          note: item.note || "",
 
-        status: "NEW",
-      })),
-    };
+          status: "NEW",
+        })),
+      };
 
-    const res = await fetch(`${API}/order/save-cart`, {
+      const res = await fetch(`${API}/order/save-cart`, {
 
-      method: "POST",
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+        headers: {
+          "Content-Type": "application/json",
+        },
 
-      body: JSON.stringify(payload),
-    });
+        body: JSON.stringify(payload),
+      });
 
-    const data = await res.json();
+      const data = await res.json();
 
-    console.log("SAVE CART:", data);
+      console.log("SAVE CART:", data);
 
-    if (data.orderId) {
-      setCurrentOrderId(data.orderId);
+      if (data.orderId) {
+        setCurrentOrderId(data.orderId);
+      }
+
+    } catch (err) {
+
+      console.log("SAVE CART ERROR:", err);
     }
+  };
 
-  } catch (err) {
+  const placeOrder = async () => {
 
-    console.log("SAVE CART ERROR:", err);
-  }
-};
+    try {
 
-const placeOrder = async () => {
+      const payload = {
 
-  try {
+        tableId: tableId,
 
-    const payload = {
+        orderId: currentOrderId,
 
-      tableId: tableId,
+        userId: "00000000-0000-0000-0000-000000000000",
 
-      orderId: currentOrderId,
+        items: cart.map((item) => ({
 
-      userId: "00000000-0000-0000-0000-000000000000",
+          id: item.DishId || item.id,
 
-      items: cart.map((item) => ({
+          name: item.Name || item.name,
 
-        id: item.DishId || item.id,
+          qty: item.qty || 1,
 
-        name: item.Name || item.name,
+          price: item.Price || item.price || 0,
 
-        qty: item.qty || 1,
+          modifiers: (item.selectedMods || [])
+        .filter((m) =>
+          /^[0-9a-fA-F-]{36}$/.test(m.ModifierID)
+        )
+        .map((m) => ({
+          ModifierId: m.ModifierID,
+          ModifierName: m.ModifierName,
+          Price: m.Price || 0,
+          qty: 1,
+        })),
 
-        price: item.Price || item.price || 0,
+          note: item.note || "",
 
-        modifiers: item.selectedMods || [],
+          status: "SENT",
+        })),
+      };
 
-        note: item.note || "",
+      const res = await fetch(`${API}/order/send`, {
 
-        status: "SENT",
-      })),
-    };
+        method: "POST",
 
-    const res = await fetch(`${API}/order/send`, {
+        headers: {
+          "Content-Type": "application/json",
+        },
 
-      method: "POST",
+        body: JSON.stringify(payload),
+      });
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+      const data = await res.json();
 
-      body: JSON.stringify(payload),
-    });
+      console.log("ORDER SEND:", data);
 
-    const data = await res.json();
+      if (data.success) {
+        if (data.orderId) { setCurrentOrderId(data.orderId); }
+        const totalAmount =
+          cart.reduce((s, i) => s + (Number(i.Price || i.price || 0) * Number(i.qty || 1)), 0).toFixed(2);
+        setShowPaymentPopup(true);
+      }
+      else {
+        alert(data.error || "Failed to place order");
+      }
 
-    console.log("ORDER SEND:", data);
+    } catch (err) {
 
-    if (data.success) { 
-      if (data.orderId) { setCurrentOrderId(data.orderId); } 
-      const totalAmount = 
-      cart .reduce( (s, i) => s + ( Number(i.Price || i.price || 0) * Number(i.qty || 1) ), 0 ) .toFixed(2); 
-      setShowPaymentPopup(true);
-    } 
-    else { 
-      alert(data.error || "Failed to place order"); 
+      console.log("PLACE ORDER ERROR:", err);
+
+      alert("Server Error");
     }
+  };
+  const loadCart = async (tableId) => {
 
-  } catch (err) {
+    try {
 
-    console.log("PLACE ORDER ERROR:", err);
+      const res = await fetch(`${API}/order/cart/${tableId}`);
 
-    alert("Server Error");
-  }
-};
-const loadCart = async (tableId) => {
+      const data = await res.json();
 
-  try {
+      console.log("LOAD CART:", data);
 
-    const res = await fetch(`${API}/order/cart/${tableId}`);
+      if (data.items) {
 
-    const data = await res.json();
+        const formatted = data.items.map((item) => ({
 
-    console.log("LOAD CART:", data);
+          ...item,
 
-    if (data.items) {
+          lineItemId:
+            item.OrderDetailId ||
+            item.lineItemId,
 
-      const formatted = data.items.map((item) => ({
+          cartId:
+            item.OrderDetailId ||
+            crypto.randomUUID(),
 
-        ...item,
+          selectedMods:
+            item.modifiers || [],
+        }));
 
-        cartId: crypto.randomUUID(),
+        setCart(formatted);
+      }
 
-        selectedMods: item.modifiers || [],
-      }));
+      if (data.currentOrderId) {
+        setCurrentOrderId(data.currentOrderId);
+      }
 
-      setCart(formatted);
+    } catch (err) {
+
+      console.log("LOAD CART ERROR:", err);
     }
-
-    if (data.currentOrderId) {
-      setCurrentOrderId(data.currentOrderId);
-    }
-
-  } catch (err) {
-
-    console.log("LOAD CART ERROR:", err);
-  }
-};
+  };
   const toggleModifier = (mod) => {
     if (mod.ModifierName.toUpperCase() === "OPEN") {
       setShowCustomModal(true);
@@ -403,90 +493,114 @@ const loadCart = async (tableId) => {
     setCustomItemPrice("");
   };
 
- const addWithModifiers = () => {
+  const addWithModifiers = () => {
 
-  if (!selectedDish) return;
+    if (!selectedDish) return;
 
-  const allAvailable = [...modifiers, ...customMods];
+    const allAvailable = [...modifiers, ...customMods];
 
-  const selectedMods = allAvailable.filter((m) =>
-    selectedModifierIds.includes(m.ModifierID)
-  );
+    const selectedMods = allAvailable.filter((m) =>
+      selectedModifierIds.includes(m.ModifierID)
+    );
 
-  const extra = selectedMods.reduce(
-    (sum, m) => sum + Number(m.Price || 0),
-    0
-  );
+    const extra = selectedMods.reduce(
+      (sum, m) => sum + Number(m.Price || 0),
+      0
+    );
 
-  const finalPrice =
-    Number(selectedDish.Price || 0) +
-    Number(extra);
+    const finalPrice =
+      Number(selectedDish.Price || 0) +
+      Number(extra);
 
-  setCart((prev) => {
+    setCart((prev) => {
 
-    // same dish + same modifiers
-    const existing = prev.find((item) => {
+      // same dish + same modifiers
+      const existing = prev.find((item) => {
 
-      const oldMods = JSON.stringify(
-        [...(item.selectedMods || [])]
-          .map((m) => m.ModifierID)
-          .sort()
-      );
+        const oldMods = JSON.stringify(
+          [...(item.selectedMods || [])]
+            .map((m) => m.ModifierID)
+            .sort()
+        );
 
-      const newMods = JSON.stringify(
-        [...selectedMods]
-          .map((m) => m.ModifierID)
-          .sort()
-      );
+        const newMods = JSON.stringify(
+          [...selectedMods]
+            .map((m) => m.ModifierID)
+            .sort()
+        );
 
-      return (
-       item.DishId === selectedDish.DishId &&
-      (item.modifierKey || "") ===
-      selectedMods
-        .map((m) => m.ModifierID)
-        .sort()
-        .join("-")
-      );
-    });
+        return (
+          item.DishId === selectedDish.DishId &&
+          (item.modifierKey || "") ===
+          selectedMods
+            .map((m) => m.ModifierID)
+            .sort()
+            .join("-")
+        );
+      });
 
-    // increase qty
-    if (existing) {
-      return prev.map((item) =>
-        item === existing
-          ? {
+      // increase qty
+      if (existing) {
+        return prev.map((item) =>
+          item === existing
+            ? {
               ...item,
               qty: (item.qty || 1) + 1,
             }
-          : item
-      );
-    }
+            : item
+        );
+      }
 
-    // new cart item
+      // new cart item
       return [
-    ...prev,
-    {
-      ...selectedDish,
+        ...prev,
+        {
+          ...selectedDish,
 
-      cartId: crypto.randomUUID(),
+          cartId: crypto.randomUUID(),
 
-      qty: 1,
+          qty: 1,
 
-      selectedMods,
+          selectedMods,
 
-      finalPrice,
+          finalPrice,
 
-      modifierKey: selectedMods
-        .map((m) => m.ModifierID)
-        .sort()
-        .join("-"),
-    },
-  ];
-  });
+          modifierKey: selectedMods
+            .map((m) => m.ModifierID)
+            .sort()
+            .join("-"),
+        },
+      ];
+    });
 
-  setShowModifier(false);
-};
+    setShowModifier(false);
+  };
+
+  const saveUpiId = async (type, upiId) => {
+    if (type === 'paynow') {
+      setPaynowUpiId(upiId);
+    } else if (type === 'upi') {
+      setUpiUpiId(upiId);
+    }
+    try {
+      await fetch(`${API}/paymodes/update-qr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payMode: type, upiId: upiId })
+      });
+    } catch (err) {
+      console.log("SAVE UPI ID ERROR:", err);
+    }
+  };
 
   // SVGs for Icons
+  const SettingsIcon = () => (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#333" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+    </svg>
+  );
+
   const BackIcon = () => (
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#333" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
   );
@@ -514,9 +628,9 @@ const loadCart = async (tableId) => {
   );
 
   const GPayBrand = () => (
-    <div style={{display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 'bold', fontSize: '12px', color: '#5f6368'}}>
-      <span style={{display:'flex'}}>
-        <svg width="14" height="14" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.16v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.16C1.43 8.55 1 10.22 1 12s.43 3.45 1.16 4.93l3.68-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.16 7.07l3.68 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 'bold', fontSize: '12px', color: '#5f6368' }}>
+      <span style={{ display: 'flex' }}>
+        <svg width="14" height="14" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.16v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.16C1.43 8.55 1 10.22 1 12s.43 3.45 1.16 4.93l3.68-2.84z" /><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.16 7.07l3.68 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg>
       </span>
       Pay
     </div>
@@ -524,77 +638,79 @@ const loadCart = async (tableId) => {
 
   const MastercardBrand = () => (
     <svg width="28" height="18" viewBox="0 0 24 16">
-      <circle cx="8" cy="8" r="8" fill="#EB001B"/>
-      <circle cx="16" cy="8" r="8" fill="#F79E1B" fillOpacity="0.8"/>
+      <circle cx="8" cy="8" r="8" fill="#EB001B" />
+      <circle cx="16" cy="8" r="8" fill="#F79E1B" fillOpacity="0.8" />
     </svg>
   );
 
   const UnionPayBrand = () => (
-    <div style={{background: '#fff', border: '1px solid #ccc', borderRadius: '4px', padding: '1px 3px', fontSize: '6px', fontWeight: 'bold', display: 'flex', flexDirection: 'column', lineHeight: 1.1, alignItems: 'center', width: '30px'}}>
-      <span style={{color: '#d9251c', transform: 'scale(0.9)'}}>UnionPay</span>
-      <span style={{color: '#004f9e', transform: 'scale(0.9)'}}>银联</span>
+    <div style={{ background: '#fff', border: '1px solid #ccc', borderRadius: '4px', padding: '1px 3px', fontSize: '6px', fontWeight: 'bold', display: 'flex', flexDirection: 'column', lineHeight: 1.1, alignItems: 'center', width: '30px' }}>
+      <span style={{ color: '#d9251c', transform: 'scale(0.9)' }}>UnionPay</span>
+      <span style={{ color: '#004f9e', transform: 'scale(0.9)' }}>银联</span>
     </div>
   );
 
   const ApplePayBrand = () => (
-    <div style={{display: 'flex', alignItems: 'center', gap: '2px', fontWeight: 'bold', fontSize: '13px', color: '#000'}}>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16.36 14.08c-.03-2.92 2.39-4.32 2.5-4.39-1.36-1.99-3.46-2.25-4.21-2.28-1.78-.18-3.48 1.05-4.4 1.05-.92 0-2.31-1.02-3.8-1-1.95.03-3.76 1.13-4.76 2.87-2.03 3.53-.52 8.75 1.45 11.59.96 1.39 2.08 2.94 3.6 2.89 1.46-.06 2.02-.95 3.79-.95 1.76 0 2.27.95 3.82.92 1.57-.03 2.54-1.42 3.49-2.81 1.1-1.61 1.55-3.17 1.57-3.25-.03-.01-2.99-1.15-3.05-4.64zM13.88 5.76c.8-.97 1.34-2.32 1.19-3.66-1.16.05-2.58.78-3.41 1.76-.73.86-1.35 2.24-1.18 3.55 1.3.1 2.6-.66 3.4-1.65z"/></svg>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '2px', fontWeight: 'bold', fontSize: '13px', color: '#000' }}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16.36 14.08c-.03-2.92 2.39-4.32 2.5-4.39-1.36-1.99-3.46-2.25-4.21-2.28-1.78-.18-3.48 1.05-4.4 1.05-.92 0-2.31-1.02-3.8-1-1.95.03-3.76 1.13-4.76 2.87-2.03 3.53-.52 8.75 1.45 11.59.96 1.39 2.08 2.94 3.6 2.89 1.46-.06 2.02-.95 3.79-.95 1.76 0 2.27.95 3.82.92 1.57-.03 2.54-1.42 3.49-2.81 1.1-1.61 1.55-3.17 1.57-3.25-.03-.01-2.99-1.15-3.05-4.64zM13.88 5.76c.8-.97 1.34-2.32 1.19-3.66-1.16.05-2.58.78-3.41 1.76-.73.86-1.35 2.24-1.18 3.55 1.3.1 2.6-.66 3.4-1.65z" /></svg>
       Pay
     </div>
   );
 
   const VisaBrand = () => (
-    <div style={{color: '#1434CB', fontWeight: '900', fontStyle: 'italic', fontSize: '15px', letterSpacing: '-1px'}}>VISA</div>
+    <div style={{ color: '#1434CB', fontWeight: '900', fontStyle: 'italic', fontSize: '15px', letterSpacing: '-1px' }}>VISA</div>
   );
 
   const AmexBrand = () => (
-    <div style={{background: '#2671B9', color: '#fff', fontSize: '6px', fontWeight: 'bold', padding: '2px', borderRadius: '2px', lineHeight: 1.1, width: '28px', textAlign: 'center'}}>
-      AMERICAN<br/>EXPRESS
+    <div style={{ background: '#2671B9', color: '#fff', fontSize: '6px', fontWeight: 'bold', padding: '2px', borderRadius: '2px', lineHeight: 1.1, width: '28px', textAlign: 'center' }}>
+      AMERICAN<br />EXPRESS
     </div>
   );
 
   const CashBrand = () => (
-    <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center'}}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <svg width="24" height="20" viewBox="0 0 40 30" fill="none">
-        <rect x="2" y="4" width="28" height="16" rx="2" fill="#2ECC71"/>
-        <circle cx="16" cy="12" r="3" fill="#27AE60"/>
-        <circle cx="26" cy="20" r="6" fill="#F1C40F" stroke="#F39C12" strokeWidth="1"/>
-        <circle cx="32" cy="16" r="5" fill="#F1C40F" stroke="#F39C12" strokeWidth="1"/>
+        <rect x="2" y="4" width="28" height="16" rx="2" fill="#2ECC71" />
+        <circle cx="16" cy="12" r="3" fill="#27AE60" />
+        <circle cx="26" cy="20" r="6" fill="#F1C40F" stroke="#F39C12" strokeWidth="1" />
+        <circle cx="32" cy="16" r="5" fill="#F1C40F" stroke="#F39C12" strokeWidth="1" />
       </svg>
     </div>
   );
 
   const VoucherBrand = () => (
-    <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center'}}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <svg width="24" height="16" viewBox="0 0 40 30" fill="none">
-        <rect x="4" y="6" width="30" height="16" fill="#FFF1E6" stroke="#FF9F43" strokeWidth="1" strokeDasharray="3 2"/>
-        <rect x="14" y="6" width="6" height="16" fill="#FF9F43"/>
+        <rect x="4" y="6" width="30" height="16" fill="#FFF1E6" stroke="#FF9F43" strokeWidth="1" strokeDasharray="3 2" />
+        <rect x="14" y="6" width="6" height="16" fill="#FF9F43" />
         <text x="12" y="16" fontSize="6" fill="#d35400" fontWeight="bold">VOUCHER</text>
       </svg>
     </div>
   );
 
   const NetsBrand = () => (
-    <div style={{color: '#E51937', fontWeight: '900', fontStyle: 'italic', fontSize: '12px', letterSpacing: '-1px'}}>NETS</div>
+    <div style={{ color: '#E51937', fontWeight: '900', fontStyle: 'italic', fontSize: '12px', letterSpacing: '-1px' }}>NETS</div>
   );
 
   const PayNowBrand = () => (
-    <div style={{color: '#7B1FA2', fontWeight: '900', fontSize: '10px', display: 'flex', flexDirection: 'column', lineHeight: 0.9, alignItems: 'center'}}>
+    <div style={{ color: '#7B1FA2', fontWeight: '900', fontSize: '10px', display: 'flex', flexDirection: 'column', lineHeight: 0.9, alignItems: 'center' }}>
       <span>PAY</span>
-      <span>N<span style={{color: '#E51937'}}>O</span>W</span>
+      <span>N<span style={{ color: '#E51937' }}>O</span>W</span>
     </div>
   );
 
-   const totalAmount 
-   = cart .reduce( (s, i) => s + 
-          ( Number(i.Price || i.price || 0) * 
-          Number(i.qty || 1) ), 0 ) .toFixed(2);
+  const totalAmount
+    = cart.reduce((s, i) => s +
+      (Number(i.Price || i.price || 0) *
+        Number(i.qty || 1)), 0).toFixed(2);
 
   return (
     <div className="pos-app">
       {/* Top Header */}
       <div className="pos-header">
-        {/* <button className="icon-btn"><BackIcon /></button> */}
+        {/* <button className="icon-btn" onClick={() => setShowSettingsModal(true)}>
+          <SettingsIcon />
+        </button> */}
         <div className="search-wrap">
           <SearchIcon />
           <input
@@ -612,38 +728,36 @@ const loadCart = async (tableId) => {
 
       {/* Categories Navigation */}
       <div className="nav-scroll">
-            {categories.map((cat) => (
-        <button
-          key={cat.CategoryId}
-          className={`pill cat-pill ${
-            activeCategory === cat.CategoryId ? "active" : ""
-          }`}
-          onClick={() => {
-            setActiveCategory(cat.CategoryId);
-            loadGroups(cat.CategoryId);
-          }}
-        >
-          {cat.KitchenTypeName}
-        </button>
-      ))}
+        {categories.map((cat) => (
+          <button
+            key={cat.CategoryId}
+            className={`pill cat-pill ${activeCategory === cat.CategoryId ? "active" : ""
+              }`}
+            onClick={() => {
+              setActiveCategory(cat.CategoryId);
+              loadGroups(cat.CategoryId);
+            }}
+          >
+            {cat.KitchenTypeName}
+          </button>
+        ))}
       </div>
 
       {/* Groups Navigation */}
       <div className="nav-scroll groups-row">
-              {groups.map((grp) => (
-        <button
-          key={grp.DishGroupId}
-          className={`pill grp-pill ${
-            activeGroup === grp.DishGroupId ? "active" : ""
-          }`}
-          onClick={() => {
-            setActiveGroup(grp.DishGroupId);
-            loadDishes(grp.DishGroupId);
-          }}
-        >
-          {grp.DishGroupName}
-        </button>
-      ))}
+        {groups.map((grp) => (
+          <button
+            key={grp.DishGroupId}
+            className={`pill grp-pill ${activeGroup === grp.DishGroupId ? "active" : ""
+              }`}
+            onClick={() => {
+              setActiveGroup(grp.DishGroupId);
+              loadDishes(grp.DishGroupId);
+            }}
+          >
+            {grp.DishGroupName}
+          </button>
+        ))}
       </div>
 
       {/* Main Content Area */}
@@ -653,12 +767,12 @@ const loadCart = async (tableId) => {
           {filteredItems.map((dish) => (
             <div className="dish-card" key={dish.DishId} onClick={() => openModifiers(dish)}>
               <div className="dish-img-box">
-               {dish.HasImage ? (
-                    <img
-                      src={`${API}/image/${dish.Image}`}
-                      alt={dish.Name}
-                    />
-                  ) : (
+                {dish.HasImage ? (
+                  <img
+                    src={`${API}/image/${dish.Image}`}
+                    alt={dish.Name}
+                  />
+                ) : (
                   <div className="dish-placeholder">
                     <ForkKnifeIcon />
                   </div>
@@ -674,8 +788,8 @@ const loadCart = async (tableId) => {
         <div className="cart-sidebar">
           <div className="cart-header">
             <span className="cart-table-no">
-                Table No:{tableNo || "1"}
-              </span>
+              Table No:{tableNo || "1"}
+            </span>
             <span className="cart-sync">• Syncing</span>
           </div>
 
@@ -690,60 +804,64 @@ const loadCart = async (tableId) => {
           ) : (
             <div className="cart-items-container">
               <div className="cart-items-list">
-               {cart.map((item, index) => (
-  <div key={index} className="cart-item">
+                {cart.map((item, index) => (
+                  <div key={index} className="cart-item">
 
-    <div className="ci-info">
+                    <div className="ci-info">
 
-      <div className="ci-name">
-        {item.Name || item.name}
-        {item.selectedMods?.length > 0 && (
-        <div className="ci-mods">
-          {item.selectedMods
-            .map((m) => m.ModifierName)
-            .join(", ")}
-        </div>
-      )}
-      </div>
+                      <div className="ci-name">
+                        {item.Name || item.name}
+                        {item.selectedMods?.length > 0 && (
+                          <div className="ci-mods">
+                            {item.selectedMods
+                              .map((m) => m.ModifierName)
+                              .join(", ")}
+                          </div>
+                        )}
+                      </div>
 
-      <div className="qty-controls">
+                      <div className="qty-controls">
 
-        <button
-          className="qty-btn"
-          onClick={() =>
-           decreaseQty(item.cartId)
-          }
-        >
-          -
-        </button>
+                        <button
+                          className="qty-btn"
+                          onClick={() =>
+                            decreaseQty(item.cartId)
+                          }
+                          disabled={item.status === "SENT"}
+                          style={{ opacity: item.status === "SENT" ? 0.5 : 1 }}
+                        >
+                          -
+                        </button>
 
-        <span className="qty-text">
-          {item.qty || 1}
-        </span>
+                        <span className="qty-text">
+                          {item.qty || 1}
+                        </span>
 
-        <button
-          className="qty-btn"
-          onClick={() =>
-            increaseQty(item.cartId)
-          }
-        >
-          +
-        </button>
+                        <button
+                          className="qty-btn"
+                          onClick={() =>
+                            increaseQty(item.cartId)
+                          }
+                          disabled={item.status === "SENT"}
+                          style={{ opacity: item.status === "SENT" ? 0.5 : 1 }}
+                        >
+                          +
+                        </button>
 
-      </div>
+                      </div>
 
-    </div>
+                    </div>
 
-    <div className="ci-price">
-      $
-      {(
-        Number(item.Price || item.price || 0) *
-        Number(item.qty || 1)
-      ).toFixed(2)}
-    </div>
+                    <div className="ci-price">
+                      $
+                      {(
+                        Number(item.Price || item.price || 0) *
+                        Number(item.qty || 1)
+                      ).toFixed(2)}
+                    </div>
 
-  </div>
-))}
+                  </div>
+                ))}
               </div>
               <div className="cart-footer">
                 <div className="cart-total-row">
@@ -760,13 +878,13 @@ const loadCart = async (tableId) => {
                     )
                     .toFixed(2)}</span>
                 </div>
-               <button 
-            className="checkout-btn"
-            onClick={placeOrder}
-          >
-            Order Placed
-          </button>
-         </div>
+                <button
+                  className="checkout-btn"
+                  onClick={placeOrder}
+                >
+                  Order Placed
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -880,98 +998,488 @@ const loadCart = async (tableId) => {
                 </div>
               </div>
             </div>
-        )}
+          )}
         </div>
-        
+
       )}
-    {showPaymentPopup && (
-  <div className="modal-overlay">
+      {showPaymentPopup && (
+        <div className="modal-overlay">
 
-    <div className="payment-popup">
+          <div className="payment-popup">
 
-      <button
-        className="payment-close"
-        onClick={() => setShowPaymentPopup(false)}
-      >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-      </button>
+            <button
+              className="payment-close"
+              onClick={() => setShowPaymentPopup(false)}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
 
-      <div className="payment-dot"></div>
+            <div className="payment-dot"></div>
 
-      <div className="payment-icon-outer">
-        <div className="payment-icon-inner">?</div>
-      </div>
+            <div className="payment-icon-outer">
+              <div className="payment-icon-inner">?</div>
+            </div>
 
-      <h2 className="payment-title">
-        How would you like to pay ?
-      </h2>
+            <h2 className="payment-title">
+              How would you like to pay ?
+            </h2>
 
-      <p className="payment-subtitle">
-        These are the available payment methods
-      </p>
+            <p className="payment-subtitle">
+              These are the available payment methods
+            </p>
 
-      <div className="payment-card">
+            <div className="payment-card">
 
-        <div className="card-top-section card-1-top">
-          <div className="qlub-branding">
-            <span className="pb-text">Powered By</span>
-            <span className="qlub-logo">qlub <span className="qlub-dots">::</span></span>
+              <div className="card-top-section card-1-top">
+                <div className="qlub-branding">
+                  <span className="pb-text">Powered By</span>
+                  <span className="qlub-logo">qlub <span className="qlub-dots">::</span></span>
+                </div>
+                <div className="brand-grid">
+                  <GPayBrand />
+                  <MastercardBrand />
+                  <UnionPayBrand />
+                  <ApplePayBrand />
+                  <VisaBrand />
+                  <AmexBrand />
+                </div>
+              </div>
+
+              <button
+                className="payment-btn"
+                onClick={() => {
+                  setShowPaymentPopup(false);
+                  setShowOnlinePayment(true);
+                }}
+              >
+                Pay Online
+              </button>
+
+            </div>
+
+            <div className="payment-or">
+              OR
+            </div>
+
+            <div className="payment-card">
+
+              <div className="card-top-section card-2-top">
+                <div className="brand-grid full-grid">
+                  <CashBrand />
+                  <VoucherBrand />
+                  <MastercardBrand />
+                  <NetsBrand />
+                  <PayNowBrand />
+                  <VisaBrand />
+                </div>
+              </div>
+
+              <button
+                className="payment-btn"
+                onClick={() => {
+                  handlePaymentSuccess("Thank you! Your order has been placed.");
+                }}
+              >
+                Pay At Cashier Now
+              </button>
+
+            </div>
+
           </div>
-          <div className="brand-grid">
-            <GPayBrand />
-            <MastercardBrand />
-            <UnionPayBrand />
-            <ApplePayBrand />
-            <VisaBrand />
-            <AmexBrand />
+
+        </div>
+      )}
+
+      {successMessage && (
+        <div className="modal-overlay" style={{ zIndex: 10000 }}>
+          <div className="success-modal">
+            <div className="success-icon">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            </div>
+            <h2 className="success-title">Success!</h2>
+            <p className="success-text">{successMessage}</p>
           </div>
         </div>
+      )}
 
-        <button
-          className="payment-btn"
-          onClick={() => {
-            alert("Online Payment");
-          }}
-        >
-          Pay Online
-        </button>
+      {showOnlinePayment && (
+        <div className="modal-overlay" style={{ zIndex: 10001, padding: 0 }}>
+          <div className="pos-app" style={{ width: '100vw', height: '100dvh', background: '#fdfbf7', display: 'flex', flexDirection: 'column', borderRadius: 0 }}>
 
-      </div>
+            <div className="pos-header" style={{ borderBottom: '1px solid #eee', background: 'white' }}>
+              <button className="icon-btn" onClick={() => setShowOnlinePayment(false)}>
+                <BackIcon />
+              </button>
+              <div style={{ flex: 1, textAlign: 'center', fontSize: '18px', fontWeight: 'bold' }}>
+                Checkout
+              </div>
+              <div style={{ width: '48px' }}></div>
+            </div>
 
-      <div className="payment-or">
-        OR
-      </div>
+            <div style={{ flex: 1, display: 'flex', gap: '20px', padding: '20px', overflowY: 'auto', flexWrap: 'wrap', alignContent: 'flex-start' }}>
+              {/* Left Side: Payment Method */}
+              <div style={{ flex: '1 1 300px', background: 'white', borderRadius: '20px', padding: '20px', boxShadow: '0 4px 15px rgba(0,0,0,0.04)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                <h3 style={{ margin: '0', textTransform: 'uppercase', fontSize: '12px', color: '#666', letterSpacing: '0.5px' }}>Select Payment Method</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '10px' }}>
+                  {/* <div style={{ padding: '20px 10px', border: '2px solid #f97316', borderRadius: '12px', textAlign: 'center', background: '#fff5eb', color: '#f97316', fontWeight: 'bold', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', cursor: 'pointer' }}>
+                <MastercardBrand /> <span style={{ fontSize: '12px' }}>Credit Card</span>
+              </div> */}
+                  <div
+                    style={{ padding: '20px 10px', border: '1px solid #eee', borderRadius: '12px', textAlign: 'center', color: '#666', fontWeight: 'bold', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', cursor: 'pointer' }}
+                    onClick={() => setShowPayNowModal(true)}
+                  >
+                    <PayNowBrand /> <span style={{ fontSize: '12px' }}>PayNow</span>
+                  </div>
+                  {/* <div
+                    style={{ padding: '20px 10px', border: '1px solid #eee', borderRadius: '12px', textAlign: 'center', color: '#666', fontWeight: 'bold', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', cursor: 'pointer' }}
+                    onClick={() => setShowUpiModal(true)}
+                  >
+                    <GPayBrand /> <span style={{ fontSize: '12px' }}>GPay / UPI</span>
+                  </div> */}
+                </div>
 
-      <div className="payment-card">
+                <div style={{ flex: 1 }}></div>
 
-        <div className="card-top-section card-2-top">
-          <div className="brand-grid full-grid">
-            <CashBrand />
-            <VoucherBrand />
-            <MastercardBrand />
-            <NetsBrand />
-            <PayNowBrand />
-            <VisaBrand />
+                <button
+                  className="checkout-btn"
+                  style={{ height: '56px', fontSize: '18px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', marginTop: '20px' }}
+                  // onClick={() => {
+                  //   setShowOnlinePayment(false);
+                  //   handlePaymentSuccess("Online Payment Successful!");
+                  // }}
+                  onClick={async () => {
+
+                    try {
+                    console.log("CURRENT ORDER ID:", currentOrderId);
+                      const res = await fetch(`${API}/sales/save`, {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json",
+                        },
+                         body: JSON.stringify({
+
+                          orderId:
+                            currentOrderId &&
+                            currentOrderId !== "null"
+                              ? currentOrderId
+                              : "00000000-0000-0000-0000-000000000000",
+
+                          tableNo: tableNo,
+
+                          tableId: tableId,
+
+                          subTotal: Number(totalAmount),
+                          
+
+                          totalAmount: Number(totalAmount),
+                          
+                          paymentMethod: "PAYNOW",
+
+                          items: cart.map((item) => ({
+
+                            id: item.DishId || item.id,
+
+                            name: item.Name || item.name,
+
+                            qty: Number(item.qty || 1),
+
+                            price: Number(item.Price || item.price || 0),
+
+                          })),
+
+                        }),
+                      });
+
+                      const data = await res.json();
+
+                      console.log("PAYMENT PROCESS:", data);
+
+                      if (data.success) {
+
+                        setShowOnlinePayment(false);
+
+                        handlePaymentSuccess(
+                          `Payment Successful! TXN: ${data.transactionId}`
+                        );
+
+                      } else {
+
+                        alert(data.error || "Payment Failed");
+
+                      }
+
+                    } catch (err) {
+
+                      console.log("PAYMENT ERROR:", err);
+
+                      alert("Server Error");
+
+                    }
+
+                  }}
+                >
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                  Complete Settlement
+                </button>
+              </div>
+
+              {/* Right Side: Summary */}
+              <div style={{ flex: '1 1 300px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                <div style={{ background: 'white', borderRadius: '20px', padding: '20px', boxShadow: '0 4px 15px rgba(0,0,0,0.04)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '15px', alignItems: 'center' }}>
+                    <span style={{ color: '#666', fontWeight: 'bold', textTransform: 'uppercase', fontSize: '11px', letterSpacing: '0.5px' }}>Amount Due</span>
+                    <span style={{ fontSize: '28px', fontWeight: '900', color: '#f97316' }}>${totalAmount}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '14px' }}>
+                    <span style={{ color: '#666', fontWeight: '600' }}>Subtotal</span>
+                    <span style={{ fontWeight: 'bold', color: '#1f2937' }}>${totalAmount}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px' }}>
+                    <span style={{ color: '#666', fontWeight: '600' }}>GST</span>
+                    <span style={{ fontWeight: 'bold', color: '#1f2937' }}>$0.00</span>
+                  </div>
+                </div>
+
+                <div style={{ flex: 1, background: 'white', borderRadius: '20px', padding: '20px', boxShadow: '0 4px 15px rgba(0,0,0,0.04)', overflowY: 'auto' }}>
+                  <h3 style={{ margin: '0 0 15px 0', textTransform: 'uppercase', fontSize: '11px', color: '#666', letterSpacing: '0.5px' }}>Order Items</h3>
+                  {cart.map((item, idx) => (
+                    <div key={idx} style={{ display: 'flex', padding: '12px 0', borderBottom: '1px solid #f3f4f6' }}>
+                      <div style={{ width: '30px', color: '#f97316', fontWeight: '900', fontSize: '13px' }}>{item.qty}x</div>
+                      <div style={{ flex: 1, fontWeight: '600', color: '#1f2937', fontSize: '13px' }}>
+                        {item.Name || item.name}
+                        {item.selectedMods?.length > 0 && (
+                          <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '4px' }}>
+                            {item.selectedMods.map((m) => m.ModifierName).join(", ")}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ fontWeight: 'bold', color: '#1f2937', fontSize: '13px' }}>
+                        ${(Number(item.Price || item.price || 0) * Number(item.qty || 1)).toFixed(2)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
+      )}
 
-        <button
-          className="payment-btn"
-          onClick={() => {
-            alert("Pay At Cashier");
-          }}
-        >
-          Pay At Cashier Now
-        </button>
+      {showPayNowModal && (
+        <div className="modal-overlay" style={{ zIndex: 10002 }}>
+          <div style={{ width: '100%', maxWidth: '320px', backgroundColor: '#fff', borderRadius: '20px', overflow: 'hidden', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: '16px' }}>
+              {/* Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <div>
+                  <div style={{ fontSize: '16px', fontWeight: '800', color: '#1f2937' }}>PayNow QR Payment</div>
+                  {/* <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>AL-HAZIMA RESTAURANT PTE LTD</div> */}
+                </div>
+                <button
+                  style={{ border: 'none', background: '#F1F5F9', borderRadius: '10px', padding: '6px', cursor: 'pointer', display: 'flex' }}
+                  onClick={() => setShowPayNowModal(false)}
+                >
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#1f2937" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+              </div>
 
-      </div>
+              {/* Amount Box */}
+              <div style={{ backgroundColor: '#F0F9FF', padding: '10px', borderRadius: '12px', alignItems: 'center', marginBottom: '16px', border: '1px solid #BAE6FD', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ fontSize: '11px', color: '#0369A1', fontWeight: '600', marginBottom: '2px' }}>Please Transfer Exactly</div>
+                <div style={{ fontSize: '22px', fontWeight: '900', color: '#0284C7' }}>${totalAmount}</div>
+              </div>
 
+              {/* Dynamic QR */}
+              <div style={{ alignItems: 'center', marginBottom: '16px', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ width: '150px', height: '150px', backgroundColor: '#fff', borderRadius: '16px', boxShadow: '0 2px 10px rgba(0,0,0,0.05)', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', border: '1px solid #f0f0f0', display: 'flex' }}>
+               <img
+                src={
+                  paynowUpiId?.startsWith("data:")
+                    ? paynowUpiId
+                    : paynowUpiId?.startsWith("/9j/")
+                    ? `data:image/jpeg;base64,${paynowUpiId}`
+                    : `data:image/png;base64,${paynowUpiId}`
+                }
+                alt="PayNow QR"
+                style={{
+                  width: "130px",
+                  height: "130px",
+                  objectFit: "contain"
+                }}
+              />
+                </div>
+                <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '8px', fontWeight: '500', textAlign: 'center' }}>
+                  Scan this QR and pay {totalAmount} exactly
+                </div>
+               <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '2px' }}>
+                  Scan using PayNow / UPI App
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <button
+                style={{ width: '100%', display: 'flex', backgroundColor: '#22c55e', padding: '12px', borderRadius: '12px', alignItems: 'center', justifyContent: 'center', gap: '8px', marginBottom: '10px', border: 'none', cursor: 'pointer' }}
+                onClick={() => {
+                  setShowPayNowModal(false);
+                  setShowOnlinePayment(false);
+                  handlePaymentSuccess("Payment Received!");
+                }}
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                <span style={{ color: '#fff', fontSize: '15px', fontWeight: '800' }}>Payment Received</span>
+              </button>
+
+              <button
+                style={{ width: '100%', padding: '6px', alignItems: 'center', display: 'flex', justifyContent: 'center', border: 'none', background: 'transparent', cursor: 'pointer' }}
+                onClick={() => setShowPayNowModal(false)}
+              >
+                <span style={{ color: '#ef4444', fontSize: '13px', fontWeight: '600' }}>Cancel Transaction</span>
+              </button>
+
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showUpiModal && (
+        <div className="modal-overlay" style={{ zIndex: 10002 }}>
+          <div style={{ width: '100%', maxWidth: '320px', backgroundColor: '#fff', borderRadius: '20px', overflow: 'hidden', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: '16px' }}>
+              {/* Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <div>
+                  <div style={{ fontSize: '16px', fontWeight: '800', color: '#1f2937' }}>UPI QR Payment</div>
+                  <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>AL-HAZIMA RESTAURANT PTE LTD</div>
+                </div>
+                <button
+                  style={{ border: 'none', background: '#F1F5F9', borderRadius: '10px', padding: '6px', cursor: 'pointer', display: 'flex' }}
+                  onClick={() => setShowUpiModal(false)}
+                >
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#1f2937" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+              </div>
+
+              {/* Amount Box */}
+              <div style={{ backgroundColor: '#F8FAFC', padding: '10px', borderRadius: '12px', alignItems: 'center', marginBottom: '16px', border: '1px solid #E2E8F0', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600', marginBottom: '2px' }}>Total Amount to Collect</div>
+                <div style={{ fontSize: '22px', fontWeight: '900', color: '#f97316' }}>${totalAmount}</div>
+              </div>
+
+              {/* QR Code Container */}
+              {/* <div style={{ alignItems: 'center', marginBottom: '10px', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ width: '160px', height: '160px', padding: '10px', backgroundColor: '#fff', borderRadius: '16px', boxShadow: '0 2px 10px rgba(0,0,0,0.1)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                  <QRCodeSVG value={`upi://pay?pa=${upiUpiId || 'merchant@upi'}&pn=Merchant&am=${totalAmount}&cu=INR`} size={140} />
+                </div>
+                <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '8px', fontWeight: '500', textAlign: 'center' }}>
+                  Ask customer to scan with any UPI App
+                </div>
+                {upiUpiId && <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '2px' }}>UPI: {upiUpiId}</div>}
+              </div> */}
+
+              {/* Action Buttons */}
+              <button
+                style={{ width: '100%', display: 'flex', backgroundColor: '#22c55e', padding: '12px', borderRadius: '12px', alignItems: 'center', justifyContent: 'center', gap: '8px', marginBottom: '10px', border: 'none', cursor: 'pointer' }}
+                onClick={() => {
+                  setShowUpiModal(false);
+                  setShowOnlinePayment(false);
+                  handlePaymentSuccess("Payment Received!");
+                }}
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                <span style={{ color: '#fff', fontSize: '15px', fontWeight: '800' }}>Payment Received</span>
+              </button>
+
+              <button
+                style={{ width: '100%', padding: '6px', alignItems: 'center', display: 'flex', justifyContent: 'center', border: 'none', background: 'transparent', cursor: 'pointer' }}
+                onClick={() => setShowUpiModal(false)}
+              >
+                <span style={{ color: '#ef4444', fontSize: '13px', fontWeight: '600' }}>Cancel Transaction</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSettingsModal && (
+        <div className="modal-overlay" style={{ zIndex: 10003 }}>
+          <div className="modal-content" style={{ maxWidth: '420px', display: 'flex', flexDirection: 'column' }}>
+            <div className="modal-header">
+              <h2 className="modal-title">Payment Settings</h2>
+              <button className="modal-close" onClick={() => setShowSettingsModal(false)}>&times;</button>
+            </div>
+            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+              <div style={{ border: '1px solid #eee', borderRadius: '12px', padding: '16px' }}>
+                <h3 style={{ margin: '0 0 4px 0', fontSize: '14px', color: '#333' }}>PayNow UPI ID</h3>
+                <p style={{ margin: '0 0 10px 0', fontSize: '12px', color: '#6b7280' }}>Enter your PayNow / UPI ID. The QR will be generated dynamically with the correct amount.</p>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+
+                    const file = e.target.files[0];
+
+                    const reader = new FileReader();
+
+                   reader.onloadend = () => {
+
+  const base64 = reader.result.split(",")[1];
+
+  setTempPaynowUpiId(base64);
+};
+
+                    if (file) {
+                      reader.readAsDataURL(file);
+                    }
+
+                  }}
+                />
+                {/* {tempPaynowUpiId && (
+                  <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'center' }}>
+                    <QRCodeSVG
+  value={
+    tempPaynowUpiId &&
+    tempPaynowUpiId.length < 100
+      ? `upi://pay?pa=${tempPaynowUpiId}&pn=Merchant&am=1&cu=INR`
+      : "upi://pay?pa=test@upi&pn=Merchant&am=1&cu=INR"
+  }
+  size={100}
+/>
+                  </div>
+                )} */}
+              </div>
+
+              {/* <div style={{ border: '1px solid #eee', borderRadius: '12px', padding: '16px' }}>
+                <h3 style={{ margin: '0 0 4px 0', fontSize: '14px', color: '#333' }}>GPay / UPI ID</h3>
+                <p style={{ margin: '0 0 10px 0', fontSize: '12px', color: '#6b7280' }}>Enter your GPay / UPI ID. The QR will include the exact order amount when shown at checkout.</p>
+                <input
+                  type="text"
+                  placeholder="e.g. 9876543210@superyes"
+                  value={tempUpiUpiId}
+                  onChange={(e) => setTempUpiUpiId(e.target.value)}
+                  style={{ width: '100%', padding: '10px 12px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '14px', boxSizing: 'border-box', outline: 'none' }}
+                />
+                {tempUpiUpiId && (
+                  <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'center' }}>
+                    <QRCodeSVG value={`upi://pay?pa=${tempUpiUpiId}&pn=Merchant&am=1&cu=INR`} size={100} />
+                  </div>
+                )}
+              </div> */}
+
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', gap: '10px' }}>
+              <button className="btn-cancel" onClick={() => setShowSettingsModal(false)}>Cancel</button>
+              <button className="btn-add" style={{ flex: 1 }} onClick={() => {
+                saveUpiId('paynow', tempPaynowUpiId);
+                saveUpiId('upi', tempUpiUpiId);
+                setShowSettingsModal(false);
+              }}>Save Settings</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
 
-  </div>
-)}
-     </div>
-   
   );
 }
 
