@@ -1024,7 +1024,7 @@ router.post("/delete-cart-item", async (req, res) => {
 
   try {
 
-    const { lineItemId } = req.body;
+    const { lineItemId, tableId } = req.body;
 
     if (!lineItemId) {
       return res.status(400).json({
@@ -1035,16 +1035,49 @@ router.post("/delete-cart-item", async (req, res) => {
 
     const pool = await poolPromise;
 
+    // 1. Get the OrderId before deleting (needed for total recalc)
+    const itemCheck = await pool.request()
+      .input("detailId", sql.UniqueIdentifier, lineItemId)
+      .query("SELECT OrderId FROM RestaurantOrderDetailCur WHERE OrderDetailId = @detailId");
+
+    const orderId = itemCheck.recordset[0]?.OrderId;
+
+    // 2. Delete modifiers for this line item first
     await pool.request()
       .input("detailId", sql.UniqueIdentifier, lineItemId)
-      .query(`
-        DELETE FROM RestaurantOrderDetailCur
-        WHERE OrderDetailId = @detailId
-      `);
+      .query("DELETE FROM RestaurantmodifierdetailCur WHERE OrderDetailId = @detailId");
 
-    res.json({
-      success: true
-    });
+    // 3. Delete the line item itself
+    await pool.request()
+      .input("detailId", sql.UniqueIdentifier, lineItemId)
+      .query("DELETE FROM RestaurantOrderDetailCur WHERE OrderDetailId = @detailId");
+
+    // 4. Recalculate order total
+    if (orderId) {
+      await pool.request()
+        .input("orderId", sql.UniqueIdentifier, orderId)
+        .query(`
+          UPDATE RestaurantOrderCur
+          SET TotalAmount = (
+            SELECT ISNULL(SUM(ActualAmount), 0)
+            FROM RestaurantOrderDetailCur
+            WHERE OrderId = @orderId AND StatusCode <> 0
+          )
+          WHERE OrderId = @orderId
+        `);
+    }
+
+    res.json({ success: true });
+
+    // 5. Sync table status and broadcast (fire-and-forget after response)
+    if (tableId) {
+      const cleanId = String(tableId).replace(/^\{|\}$/g, "").trim();
+      syncTableStatus(req, cleanId).catch(() => {});
+      const io = req.app.get("io");
+      if (io) {
+        io.emit("cart_updated", { tableId: cleanId });
+      }
+    }
 
   } catch (err) {
 

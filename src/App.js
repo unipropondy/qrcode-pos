@@ -8,11 +8,12 @@ function App() {
 
   const skipSaveRef = useRef(false);
   const deleteInProgressRef = useRef(false);
-  const refreshTimeoutRef = useRef(null);
+  const actionRef = useRef(""); // "INSERT", "UPDATE", "DELETE"
 
   const API = `${BASE_URL}/api`;
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState([]);
+  const [isCartLoading, setIsCartLoading] = useState(false);
 
   // Navigation states
   const [categories, setCategories] = useState([]);
@@ -189,7 +190,7 @@ function App() {
     }
   };
   const addToCartSimple = async (dish) => {
-
+    actionRef.current = "INSERT";
     setCart((prev) => {
 
       const existing = prev.find(
@@ -228,7 +229,7 @@ function App() {
   };
 
   const increaseQty = (index) => {
-
+    actionRef.current = "UPDATE";
     setCart((prev) =>
 
       prev.map((item, i) =>
@@ -244,7 +245,6 @@ function App() {
   };
 
   const decreaseQty = async (index) => {
-
     const item = cart[index];
     if (!item) return;
 
@@ -254,7 +254,11 @@ function App() {
     // qty = 1 → delete from DB
     if (currentQty <= 1) {
 
+      // ✅ Set skipSaveRef BEFORE setCart so the useEffect does NOT fire
+      // saveCartToBackend automatically — preventing a race with the delete API
+      skipSaveRef.current = true;
       deleteInProgressRef.current = true;
+      actionRef.current = "DELETE";
 
       // Optimistic UI update: reliably remove by exact index
       setCart((prev) => {
@@ -266,53 +270,51 @@ function App() {
       try {
         let actualLineItemId = item.lineItemId || item.OrderDetailId;
 
-        // If it's a newly added item, wait for it to be saved to DB to get its real ID
+        // If no DB ID in state, fetch once from DB to find it
         if (!actualLineItemId && tableId) {
-          for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-              const cartRes = await fetch(`${API}/order/cart/${tableId}`);
-              const cartData = await cartRes.json();
-              const match = cartData?.items?.find(b => (b.DishId || b.id) == (item.DishId || item.id));
-              if (match && (match.OrderDetailId || match.lineItemId)) {
-                actualLineItemId = match.OrderDetailId || match.lineItemId;
-                break;
-              }
-            } catch (e) {}
-            // wait 1 second before retrying
-            await new Promise(resolve => setTimeout(resolve, 1000));
+          try {
+            const cartRes = await fetch(`${API}/order/cart/${tableId}`);
+            const cartData = await cartRes.json();
+            const match = cartData?.items?.find(b =>
+              String(b.id || b.DishId || b.dishId) === String(item.DishId || item.id)
+            );
+            if (match) {
+              actualLineItemId = match.lineItemId || match.OrderDetailId;
+            }
+          } catch (e) {
+            console.log("Fetch lineItemId error:", e);
           }
         }
 
-        // Only send delete request if we have a valid database ID.
-        // Sending a UUID causes a backend 500 error.
         if (actualLineItemId) {
-          await fetch(
-            `${API}/order/delete-cart-item`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                tableId: tableId,
-                lineItemId: actualLineItemId,
-              }),
-            }
-          );
+          await fetch(`${API}/order/delete-cart-item`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              tableId: tableId,
+              lineItemId: actualLineItemId,
+            }),
+          });
+          console.log("DELETE ITEM: sent delete for", actualLineItemId);
+        } else {
+          console.warn("DELETE ITEM: no lineItemId found, skipping DB delete");
         }
-        
+
       } catch (err) {
         console.log("DELETE ITEM ERROR:", err);
       } finally {
-        setTimeout(() => {
-          deleteInProgressRef.current = false;
-        }, 500); // allow buffer for saveCartToBackend to finish
+        deleteInProgressRef.current = false;
+        // Reload cart from DB to confirm final state
+        if (tableId) {
+          await loadCart(tableId);
+        }
       }
 
       return;
     }
 
     // decrease qty
+    actionRef.current = "UPDATE";
     setCart((prev) => {
       const newCart = [...prev];
       newCart[index] = { ...newCart[index], qty: currentQty - 1 };
@@ -322,7 +324,7 @@ function App() {
   };
 
   const saveCartToBackend = async () => {
-
+    setIsCartLoading(true);
     try {
 
       const payload = {
@@ -373,45 +375,60 @@ function App() {
         setCurrentOrderId(data.orderId);
       }
 
-      // Silently sync real OrderDetailIds for new items without overwriting optimistic quantities
       if (tableId && !deleteInProgressRef.current) {
-        try {
-          const cartRes = await fetch(`${API}/order/cart/${tableId}`);
-          const cartData = await cartRes.json();
-          
-          if (cartData && cartData.items) {
-            setCart(prev => {
-              let changed = false;
-              const updatedCart = prev.map(item => {
-                if (!item.OrderDetailId && !item.lineItemId) {
-                  const match = cartData.items.find(b => b.DishId == (item.DishId || item.id));
-                  if (match && (match.OrderDetailId || match.lineItemId)) {
-                    changed = true;
-                    return { 
-                      ...item, 
-                      OrderDetailId: match.OrderDetailId || match.lineItemId, 
-                      lineItemId: match.OrderDetailId || match.lineItemId 
-                    };
-                  }
-                }
-                return item;
-              });
-              
-              if (changed) {
-                skipSaveRef.current = true;
-                return updatedCart;
-              }
-              return prev;
-            });
+        if (actionRef.current === "UPDATE") {
+          // User requested refresh the GET option for plus and minus buttons
+          try {
+            // Wait briefly for DB transaction to commit
+            await new Promise(r => setTimeout(r, 600));
+            await loadCart(tableId);
+          } catch (syncErr) {
+            console.log("Refresh GET error:", syncErr);
           }
-        } catch (syncErr) {
-          console.log("Silent ID sync error:", syncErr);
+        } else if (actionRef.current === "INSERT") {
+          // Silently sync real OrderDetailIds for new items without overwriting optimistic quantities
+          try {
+            const cartRes = await fetch(`${API}/order/cart/${tableId}`);
+            const cartData = await cartRes.json();
+            
+            if (cartData && cartData.items) {
+              setCart(prev => {
+                let changed = false;
+                const updatedCart = prev.map(item => {
+                  if (!item.OrderDetailId && !item.lineItemId) {
+                    const match = cartData.items.find(b => 
+                      (b.id || b.DishId || b.dishId) == (item.DishId || item.id)
+                    );
+                    if (match && (match.OrderDetailId || match.lineItemId)) {
+                      changed = true;
+                      return { 
+                        ...item, 
+                        OrderDetailId: match.OrderDetailId || match.lineItemId, 
+                        lineItemId: match.OrderDetailId || match.lineItemId 
+                      };
+                    }
+                  }
+                  return item;
+                });
+                
+                if (changed) {
+                  skipSaveRef.current = true;
+                  return updatedCart;
+                }
+                return prev;
+              });
+            }
+          } catch (syncErr) {
+            console.log("Silent ID sync error:", syncErr);
+          }
         }
       }
 
     } catch (err) {
 
       console.log("SAVE CART ERROR:", err);
+    } finally {
+      setIsCartLoading(false);
     }
   };
 
@@ -861,10 +878,13 @@ function App() {
                 onClick={() => tableId && loadCart(tableId)}
                 style={{ background: 'none', border: '1px solid #ddd', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
                 title="Refresh Cart"
+                disabled={isCartLoading}
               >
                 ↻ Refresh
               </button>
-              <span className="cart-sync">• Syncing</span>
+              <span className="cart-sync" style={{ color: isCartLoading ? '#f97316' : '#9ca3af' }}>
+                {isCartLoading ? "• Loading..." : "• Synced"}
+              </span>
             </div>
           </div>
 
@@ -899,11 +919,9 @@ function App() {
 
                         <button
                           className="qty-btn"
-                          onClick={() =>
-                            decreaseQty(index)
-                          }
-                          disabled={item.status === "SENT"}
-                          style={{ opacity: item.status === "SENT" ? 0.5 : 1 }}
+                          onClick={() => decreaseQty(index)}
+                          disabled={item.status === "SENT" || isCartLoading}
+                          style={{ opacity: (item.status === "SENT" || isCartLoading) ? 0.5 : 1 }}
                         >
                           -
                         </button>
@@ -914,11 +932,9 @@ function App() {
 
                         <button
                           className="qty-btn"
-                          onClick={() =>
-                            increaseQty(index)
-                          }
-                          disabled={item.status === "SENT"}
-                          style={{ opacity: item.status === "SENT" ? 0.5 : 1 }}
+                          onClick={() => increaseQty(index)}
+                          disabled={item.status === "SENT" || isCartLoading}
+                          style={{ opacity: (item.status === "SENT" || isCartLoading) ? 0.5 : 1 }}
                         >
                           +
                         </button>
