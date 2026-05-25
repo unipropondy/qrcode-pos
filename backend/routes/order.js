@@ -1092,6 +1092,60 @@ router.post("/delete-cart-item", async (req, res) => {
 
 });
 
+router.get("/order-details/:orderId", async (req, res) => {
+
+  try {
+
+    const { orderId } = req.params;
+
+    const pool = await poolPromise;
+
+    const result = await pool.request()
+      .input("orderNo", sql.NVarChar(50), orderId)
+      .query(`
+        SELECT
+            o.Tableno,
+            o.OrderDateTime,
+            o.OrderNumber,
+
+            CASE
+                WHEN d.StatusCode = '2' THEN 'PREPARING'
+                WHEN d.StatusCode = '3' THEN 'READY'
+                ELSE 'UNKNOWN'
+            END AS StatusLabel,
+
+            d.Description,
+            d.DishName,
+            d.Quantity
+
+        FROM RestaurantOrderCur o
+
+        INNER JOIN RestaurantOrderDetailCur d
+            ON o.OrderId = d.OrderId
+
+        WHERE ISNULL(d.isDelivered, 0) = 0
+          AND d.StatusCode IN ('2', '3')
+          AND o.entry_status = 'q'
+          AND d.OrderNumber = @orderNo
+
+        ORDER BY o.OrderDateTime ASC
+      `);
+
+    res.json(result.recordset);
+
+  } catch (err) {
+
+    console.log(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+
+  }
+
+});
+
 module.exports = router;
 
 

@@ -3,6 +3,12 @@ import React, { useState, useEffect, useRef } from "react";
 import "./App.css";
 import { BASE_URL } from "./Configs/api";
 import { QRCodeSVG } from "qrcode.react";
+import {
+  Routes,
+  Route
+} from "react-router-dom";
+
+import SettlementSuccess from "./SettlementSuccess";
 
 function App() {
 
@@ -787,7 +793,15 @@ function App() {
       (Number(i.Price || i.price || 0) *
         Number(i.qty || 1)), 0).toFixed(2);
 
-  return (
+ return (
+
+  <Routes>
+
+    <Route
+      path="/"
+      element={
+
+        // <div className="pos-app">
     <div className="pos-app">
       {/* Top Header */}
       <div className="pos-header">
@@ -973,7 +987,7 @@ function App() {
                   className="checkout-btn"
                   onClick={placeOrder}
                 >
-                  Order Placed
+                  Place Order
                 </button>
               </div>
             </div>
@@ -1122,17 +1136,22 @@ function App() {
             <div className="payment-card">
 
               <div className="card-top-section card-1-top">
-                <div className="qlub-branding">
+                {/* <div className="qlub-branding">
                   <span className="pb-text">Powered By</span>
                   <span className="qlub-logo">qlub <span className="qlub-dots">::</span></span>
-                </div>
+                </div> */}
                 <div className="brand-grid">
-                  <GPayBrand />
+                   <VoucherBrand />
+                  <MastercardBrand />
+                  <NetsBrand />
+                  <PayNowBrand />
+                  <VisaBrand />
+                  {/* <GPayBrand />
                   <MastercardBrand />
                   <UnionPayBrand />
                   <ApplePayBrand />
                   <VisaBrand />
-                  <AmexBrand />
+                  <AmexBrand /> */}
                 </div>
               </div>
 
@@ -1287,17 +1306,25 @@ function App() {
 
                       if (data.success) {
 
-                        setShowOnlinePayment(false);
+                    setShowOnlinePayment(false);
 
-                        handlePaymentSuccess(
-                          `Payment Successful! TXN: ${data.transactionId}`
-                        );
+                    handlePaymentSuccess(
+                      `Payment Successful! TXN: ${data.transactionId}`
+                    );
 
-                      } else {
+                    // ✅ Open SettlementSuccess Screen
+                    setTimeout(() => {
 
-                        alert(data.error || "Payment Failed");
+                      window.location.href =
+                        `/settlement-success?tableId=${tableId}&table=${tableNo}&orderId=${currentOrderId}`;
 
-                      }
+                    }, 1000);
+
+                  } else {
+
+                    alert(data.error || "Payment Failed");
+
+                  }
 
                     } catch (err) {
 
@@ -1569,9 +1596,17 @@ function App() {
           </div>
         </div>
       )}
-    </div>
+          </div>
+      }
+    />
 
-  );
+    <Route
+      path="/settlement-success"
+      element={<SettlementSuccess />}
+    />
+
+  </Routes>
+);
 }
 
 export default App;
