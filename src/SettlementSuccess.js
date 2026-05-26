@@ -1,11 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { BASE_URL } from "./Configs/api";
 import "./SettlementSuccess.css";
+import { Home } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+
 
 function SettlementSuccess() {
 
   const API = `${BASE_URL}/api`;
 
+  const navigate = useNavigate();
+const [tableId, setTableId] = useState("");
   const [orders, setOrders] = useState([]);
 
   const [orderNumber, setOrderNumber] = useState("");
@@ -23,6 +28,8 @@ function SettlementSuccess() {
       const params = new URLSearchParams(window.location.search);
 
       const orderId = params.get("orderId");
+
+          setTableId(params.get("tableId") || "");
 
       const res = await fetch(
         `${API}/order/order-details/${orderId}`
@@ -62,17 +69,30 @@ function SettlementSuccess() {
         <div className="settlement-top-line"></div>
 
         {/* HEADER */}
-        <div className="settlement-header-section">
+       <div className="settlement-header-section">
 
-          <h1 className="settlement-table-title">
-            Section-1 • Table {tableNo}
-          </h1>
+            <div>
 
-          <div className="settlement-order-number">
-            #{orderNumber}
+              <h1 className="settlement-table-title">
+                Section-1 • Table {tableNo}
+              </h1>
+
+              <div className="settlement-order-number">
+                #{orderNumber}
+              </div>
+
+            </div>
+
+           <button
+            className="settlement-home-btn"
+            onClick={() => {
+              navigate(`/?tableId=${tableId}&table=${tableNo}`);
+            }}
+          >
+            🏠
+          </button>
+
           </div>
-
-        </div>
 
         {/* BADGES */}
         <div className="settlement-badge-row">
@@ -117,8 +137,28 @@ function SettlementSuccess() {
                 {item.Quantity}x
               </div>
 
-              <div className="settlement-dish-name">
-                {item.DishName}
+              <div className="settlement-item-content">
+
+                <div className="settlement-dish-top">
+
+                  <div className="settlement-dish-name">
+                    {item.DishName}
+                  </div>
+
+                  <div className="settlement-item-price">
+                    ${Number(item.Price || 0).toFixed(2)}
+                  </div>
+
+                </div>
+
+                <div className="settlement-status-row">
+
+                  <div className="settlement-status preparing">
+                    Preparing
+                  </div>
+
+                </div>
+
               </div>
 
             </div>

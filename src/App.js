@@ -1184,14 +1184,19 @@ function App() {
                 </div>
               </div>
 
-              <button
-                className="payment-btn"
-                onClick={() => {
-                  handlePaymentSuccess("Thank you! Your order has been placed.");
-                }}
-              >
-                Pay At Cashier Now
-              </button>
+            <button
+  className="payment-btn"
+  onClick={() => {
+
+    setShowPaymentPopup(false);
+
+    window.location.href =
+      `/settlement-success?tableId=${tableId}&table=${tableNo}&orderId=${currentOrderId}`;
+
+  }}
+>
+  Pay At Cashier Now
+</button>
 
             </div>
 

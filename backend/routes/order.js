@@ -1116,7 +1116,9 @@ router.get("/order-details/:orderId", async (req, res) => {
 
             d.Description,
             d.DishName,
-            d.Quantity
+            d.Quantity,
+            d.PricePerUnit AS Price
+
 
         FROM RestaurantOrderCur o
 
