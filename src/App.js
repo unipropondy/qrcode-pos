@@ -934,8 +934,8 @@ function App() {
                         <button
                           className="qty-btn"
                           onClick={() => decreaseQty(index)}
-                          disabled={item.status === "SENT" || isCartLoading}
-                          style={{ opacity: (item.status === "SENT" || isCartLoading) ? 0.5 : 1 }}
+                          disabled={(item.status && item.status !== "NEW") || isCartLoading}
+                          style={{ opacity: ((item.status && item.status !== "NEW") || isCartLoading) ? 0.5 : 1 }}
                         >
                           -
                         </button>
@@ -947,8 +947,8 @@ function App() {
                         <button
                           className="qty-btn"
                           onClick={() => increaseQty(index)}
-                          disabled={item.status === "SENT" || isCartLoading}
-                          style={{ opacity: (item.status === "SENT" || isCartLoading) ? 0.5 : 1 }}
+                          disabled={(item.status && item.status !== "NEW") || isCartLoading}
+                          style={{ opacity: ((item.status && item.status !== "NEW") || isCartLoading) ? 0.5 : 1 }}
                         >
                           +
                         </button>

@@ -83,16 +83,29 @@ const [tableId, setTableId] = useState("");
 
             </div>
 
-           <button
-            className="settlement-home-btn"
-            onClick={() => {
-              navigate(`/?tableId=${tableId}&table=${tableNo}`);
-            }}
-          >
-            🏠
-          </button>
+          <div className="settlement-header-actions">
+
+            <button
+              className="settlement-home-btn"
+              onClick={() => {
+                navigate(`/?tableId=${tableId}&table=${tableNo}`);
+              }}
+            >
+              🏠
+            </button>
+
+            <button
+              className="settlement-refresh-btn"
+              onClick={() => {
+                loadOrderDetails();
+              }}
+            >
+              ↻ Refresh
+            </button>
 
           </div>
+
+       </div>
 
         {/* BADGES */}
         <div className="settlement-badge-row">
@@ -153,9 +166,15 @@ const [tableId, setTableId] = useState("");
 
                 <div className="settlement-status-row">
 
-                  <div className="settlement-status preparing">
-                    Preparing
-                  </div>
+                <div
+                className={`settlement-status ${
+                  item.StatusLabel === "READY"
+                    ? "ready"
+                    : "preparing"
+                }`}
+              >
+                {item.StatusLabel}
+              </div>
 
                 </div>
 
