@@ -74,7 +74,7 @@ const [tableId, setTableId] = useState("");
             <div>
 
               <h1 className="settlement-table-title">
-                Section-1 • Table {tableNo}
+                 Table {tableNo}
               </h1>
 
               <div className="settlement-order-number">
