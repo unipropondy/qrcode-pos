@@ -20,6 +20,7 @@ function App() {
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState([]);
   const [isCartLoading, setIsCartLoading] = useState(false);
+  const [paymentDone, setPaymentDone] = useState(false);
 
   // Navigation states
   const [categories, setCategories] = useState([]);
@@ -211,6 +212,7 @@ function App() {
             ? {
               ...item,
               qty: (item.qty || 1) + 1,
+              status: "NEW",
             }
             : item
         );
@@ -228,6 +230,7 @@ function App() {
           selectedMods: [],
 
           finalPrice: Number(dish.Price || 0),
+          status: "NEW",
         }
       ];
     });
@@ -328,6 +331,176 @@ function App() {
     });
 
   };
+
+ // Online payment flow using YeahPay demo
+
+  const handlePayOnline = async () => {
+    // Calculate total amount inside the function
+    const totalAmount = cart.reduce((s, i) => 
+        s + (Number(i.Price || i.price || 0) * Number(i.qty || 1)), 0
+    ).toFixed(2);
+    
+    console.log("Opening payment for amount:", totalAmount);
+    console.log("Order ID:", currentOrderId);
+    
+    // Open YeahPay demo page with amount parameter
+    const demoUrl = `https://yeahpay-demo-production.up.railway.app?amount=${totalAmount}&orderId=${currentOrderId}&from=pos`;
+    
+    const paymentWindow = window.open(demoUrl, '_blank', 'width=500,height=700');
+    
+    if (!paymentWindow) {
+        alert("Popup blocked! Please allow popups for this site.");
+        return;
+    }
+    
+    // Listen for payment success message
+    const handleMessage = (event) => {
+        if (event.data.type === 'YEAHPAY_PAYMENT_SUCCESS') {
+            console.log("Payment success message received:", event.data);
+            
+            // Remove event listener
+            window.removeEventListener('message', handleMessage);
+            
+            // Complete the order
+            completeOrder(event.data.orderId, totalAmount);
+            
+            // Close the payment window
+            if (paymentWindow) paymentWindow.close();
+        }
+    };
+    
+    window.addEventListener('message', handleMessage);
+};
+
+// const completeOrder = async (orderId, amount) => {
+//     try {
+//         const res = await fetch(`${API}/sales/save`, {
+//             method: "POST",
+//             headers: { "Content-Type": "application/json" },
+//             body: JSON.stringify({
+//                 orderId: orderId,
+//                 tableNo: tableNo,
+//                 tableId: tableId,
+//                 subTotal: parseFloat(amount),
+//                 totalAmount: parseFloat(amount),
+//                 paymentMethod: "ONLINE",
+//                 items: cart.map((item) => ({
+//                     id: item.DishId || item.id,
+//                     name: item.Name || item.name,
+//                     qty: Number(item.qty || 1),
+//                     price: Number(item.Price || item.price || 0)
+//                 }))
+//             })
+//         });
+        
+//         const data = await res.json();
+//         if (data.success) {
+//             // Clear cart
+//             setCart([]);
+//             // Show success message
+//             handlePaymentSuccess(`Payment Successful! Amount: S$${amount}`);
+//             // Redirect to settlement success
+//             setTimeout(() => {
+//                 window.location.href = `/settlement-success?tableId=${tableId}&table=${tableNo}&orderId=${orderId}`;
+//             }, 1500);
+//         } else {
+//             alert(data.error || "Payment Failed");
+//         }
+//     } catch (err) {
+//         console.log("COMPLETE ORDER ERROR:", err);
+//         alert("Server Error: " + err.message);
+//     }
+// };
+
+const completeOrder = async (orderId, amount) => {
+  try {
+
+    // 1. SAVE SALES
+    const res = await fetch(`${API}/sales/save`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        orderId: orderId,
+        tableNo: tableNo,
+        tableId: tableId,
+        subTotal: parseFloat(amount),
+        totalAmount: parseFloat(amount),
+        paymentMethod: "ONLINE",
+        items: cart.map((item) => ({
+          id: item.DishId || item.id,
+          name: item.Name || item.name,
+          qty: Number(item.qty || 1),
+          price: Number(item.Price || item.price || 0)
+        }))
+      })
+    });
+
+    const data = await res.json();
+
+    console.log("SALES SAVE:", data);
+
+    if (!data.success) {
+      alert(data.error || "Settlement Failed");
+      return;
+    }
+
+    // 2. COMPLETE ORDER / FREE TABLE
+    // await fetch(`${API}/order/complete`, {
+    //   method: "POST",
+    //   headers: {
+    //     "Content-Type": "application/json"
+    //   },
+    //   body: JSON.stringify({
+    //     tableId: tableId,
+    //     userId: "00000000-0000-0000-0000-000000000000"
+    //   })
+    // });
+
+    await fetch(`${API}/order/mark-sent`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        orderId: orderId
+      })
+    });
+
+   await fetch(`${API}/order/payment-status`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    tableId: tableId,
+    paymentStatus: 1
+  })
+});
+
+    // 3. CLEAR CART
+    // setCart([]);
+
+    // 4. SUCCESS MESSAGE
+
+    setPaymentDone(true);
+
+    handlePaymentSuccess(`Payment Successful! Amount: S$${amount}`);
+
+    // 5. OPEN SETTLEMENT PAGE
+    setTimeout(() => {
+      window.location.href =
+        `/settlement-success?tableId=${tableId}&table=${tableNo}&orderId=${orderId}`;
+    }, 1000);
+
+  } catch (err) {
+
+    console.log("COMPLETE ORDER ERROR:", err);
+
+    alert("Server Error: " + err.message);
+  }
+};
 
   const saveCartToBackend = async () => {
     setIsCartLoading(true);
@@ -494,6 +667,7 @@ function App() {
 
       if (data.success) {
         if (data.orderId) { setCurrentOrderId(data.orderId); }
+        
         const totalAmount =
           cart.reduce((s, i) => s + (Number(i.Price || i.price || 0) * Number(i.qty || 1)), 0).toFixed(2);
         setShowPaymentPopup(true);
@@ -635,6 +809,7 @@ function App() {
             ? {
               ...item,
               qty: (item.qty || 1) + 1,
+              status: "NEW",
             }
             : item
         );
@@ -658,6 +833,8 @@ function App() {
             .map((m) => m.ModifierID)
             .sort()
             .join("-"),
+          
+          status: "NEW",
         },
       ];
     });
@@ -934,7 +1111,10 @@ function App() {
                         <button
                           className="qty-btn"
                           onClick={() => decreaseQty(index)}
-                          disabled={(item.status && item.status !== "NEW") || isCartLoading}
+                        disabled={
+                          (item.status && item.status === "SENT") ||
+                          isCartLoading
+                        }
                           style={{ opacity: ((item.status && item.status !== "NEW") || isCartLoading) ? 0.5 : 1 }}
                         >
                           -
@@ -947,7 +1127,10 @@ function App() {
                         <button
                           className="qty-btn"
                           onClick={() => increaseQty(index)}
-                          disabled={(item.status && item.status !== "NEW") || isCartLoading}
+                       disabled={
+                        (item.status && item.status === "SENT") ||
+                        isCartLoading
+                      }
                           style={{ opacity: ((item.status && item.status !== "NEW") || isCartLoading) ? 0.5 : 1 }}
                         >
                           +
@@ -1155,7 +1338,7 @@ function App() {
                 </div>
               </div>
 
-              <button
+              {/* <button
                 className="payment-btn"
                 onClick={() => {
                   setShowPaymentPopup(false);
@@ -1163,7 +1346,40 @@ function App() {
                 }}
               >
                 Pay Online
-              </button>
+              </button>*/}
+
+            <button
+                  className="payment-btn"
+                  onClick={async () => {
+                    setShowPaymentPopup(false);
+                    try {
+                      await fetch(`${API}/order/mark-sent`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ orderId: currentOrderId })
+                      });
+                      
+                      await fetch(`${API}/order/payment-status`, {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                          tableId: tableId,
+                          paymentStatus: 1
+                        })
+                      });
+
+                      skipSaveRef.current = true;
+                      setCart((prev) => prev.map((item) => ({ ...item, status: "SENT" })));
+                    } catch (e) {
+                      console.error("Mark sent/payment status error:", e);
+                    }
+                    handlePayOnline();
+                  }}
+                >
+                  Pay Online
+                </button>
 
             </div>
 
@@ -1186,8 +1402,30 @@ function App() {
 
             <button
   className="payment-btn"
-  onClick={() => {
+  onClick={async () => {
+     try {
+      await fetch(`${API}/order/mark-sent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: currentOrderId })
+      });
 
+      await fetch(`${API}/order/payment-status`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          tableId: tableId,
+          paymentStatus: 0
+        })
+      });
+
+    } catch (e) {
+
+      console.error(e);
+
+    }
     setShowPaymentPopup(false);
 
     window.location.href =
@@ -1255,7 +1493,7 @@ function App() {
 
                 <div style={{ flex: 1 }}></div>
 
-                <button
+               {/* <button
                   className="checkout-btn"
                   style={{ height: '56px', fontSize: '18px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', marginTop: '20px' }}
                   // onClick={() => {
@@ -1343,7 +1581,15 @@ function App() {
                 >
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
                   Complete Settlement
-                </button>
+                </button>*/}
+         <button
+            className="checkout-btn"
+            style={{ height: '56px', fontSize: '18px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', marginTop: '20px' }}
+            onClick={handlePayOnline}
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+            Complete Settlement
+          </button>
               </div>
 
               {/* Right Side: Summary */}

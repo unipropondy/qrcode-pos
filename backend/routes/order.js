@@ -387,6 +387,7 @@ async function syncTableStatus(req, tableId) {
         ELSE 0 
     END, 
        entry_status = 'q',
+       PAYMENT_STATUS = NULL,
         TotalAmount = @total, 
         CurrentOrderId = @ActualOrderNo,
         StartTime = CASE WHEN @count > 0 AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
@@ -470,6 +471,7 @@ router.post("/save-cart", async (req, res) => {
           SET Status = CASE WHEN @oid IS NOT NULL THEN 1 ELSE 0 END, 
               CurrentOrderId = @oid,
                entry_status = 'q',
+               PAYMENT_STATUS = NULL,
               StartTime = CASE WHEN @oid IS NOT NULL AND (StartTime IS NULL OR StartTime < '2000-01-01') THEN GETDATE() 
                                WHEN @oid IS NULL THEN NULL 
                                ELSE StartTime END
@@ -563,7 +565,8 @@ if (
       }
       const sentItems = clientItems.map(item => ({
         ...item,
-        status: (item.status === 'VOIDED' || item.StatusCode === 0) ? 'VOIDED' : 'SENT'
+        // status: (item.status === 'VOIDED' || item.StatusCode === 0) ? 'VOIDED' : 'SENT'
+        status: (item.status === 'VOIDED' || item.StatusCode === 0) ? 'VOIDED' : 'NEW'
       }));
 
       // 3. FORCE SYNC with the new Professional ID
@@ -583,6 +586,7 @@ if (
           UPDATE TableMaster 
           SET Status = 1, 
               entry_status ='q',
+              PAYMENT_STATUS = NULL,
               CurrentOrderId = @oid,
               StartTime = CASE WHEN StartTime IS NULL OR StartTime < '2000-01-01' THEN GETDATE() ELSE StartTime END,
               ModifiedOn = GETDATE()
@@ -848,6 +852,7 @@ router.post("/hold", async (req, res) => {
         UPDATE TableMaster 
         SET Status = 3, 
          entry_status = 'q',
+         PAYMENT_STATUS = NULL,
             ModifiedOn = GETDATE() 
         WHERE TableId = @tid
       `);
@@ -871,7 +876,7 @@ router.post("/checkout", async (req, res) => {
       .input("tid", sql.UniqueIdentifier, cleanId)
       .query(`
         -- 1. Update Table Status to Checkout (2)
-        UPDATE TableMaster SET Status = 2,  entry_status = 'q', ModifiedOn = GETDATE() WHERE TableId = @tid;
+        UPDATE TableMaster SET Status = 2,  entry_status = 'q',PAYMENT_STATUS = NULL, ModifiedOn = GETDATE() WHERE TableId = @tid;
 
         -- 2. Mark all active items for this table as SERVED (4) so they leave KDS
         UPDATE d
@@ -1111,6 +1116,7 @@ router.get("/order-details/:orderId", async (req, res) => {
             CASE
                 WHEN d.StatusCode = '2' THEN 'PREPARING'
                 WHEN d.StatusCode = '3' THEN 'READY'
+                WHEN d.StatusCode = '1' THEN 'PREPARING'
                 ELSE 'UNKNOWN'
             END AS StatusLabel,
 
@@ -1126,7 +1132,7 @@ router.get("/order-details/:orderId", async (req, res) => {
             ON o.OrderId = d.OrderId
 
         WHERE ISNULL(d.isDelivered, 0) = 0
-          AND d.StatusCode IN ('2', '3')
+          AND d.StatusCode IN ('1','2', '3')
           AND o.entry_status = 'q'
           AND d.OrderNumber = @orderNo
 
@@ -1148,6 +1154,74 @@ router.get("/order-details/:orderId", async (req, res) => {
 
 });
 
+//online payment process
+router.post("/payment-status", async (req, res) => {
+  try {
+     const { tableId, paymentStatus } = req.body;
+     const pStatus = paymentStatus !== undefined ? paymentStatus : 1;
+     const cleanId = String(tableId).replace(/^\{|\}$/g, "").trim();
+
+    const pool = await poolPromise;
+
+    await pool.request()
+      .input("tid", sql.UniqueIdentifier, cleanId)
+      .input("pStatus", sql.Int, pStatus)
+      .query(`
+        UPDATE TableMaster
+       SET PAYMENT_STATUS = @pStatus,
+            Status = 1,
+            entry_status = 'q',
+            ModifiedOn = GETDATE()
+        WHERE TableId = @tid
+      `);
+
+    res.json({
+      success: true
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+
+  }
+
+});
+
+//online payment process
+router.post("/mark-sent", async (req, res) => {
+
+  try {
+
+    const { orderId } = req.body;
+
+    const pool = await poolPromise;
+
+    await pool.request()
+      .input("orderNo", sql.NVarChar(50), orderId)
+      .query(`
+        UPDATE RestaurantOrderDetailCur
+        SET StatusCode = 2
+        WHERE OrderNumber = @orderNo
+          AND StatusCode <> 0
+      `);
+
+    res.json({
+      success: true
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+
+  }
+
+});
 module.exports = router;
 
 

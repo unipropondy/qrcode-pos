@@ -37,7 +37,7 @@ const [tableId, setTableId] = useState("");
 
       const data = await res.json();
 
-      setOrders(data);
+      setOrders(Array.isArray(data) ? data : []);
 
       if (data.length > 0) {
 
@@ -54,11 +54,15 @@ const [tableId, setTableId] = useState("");
     }
   };
 
-  const totalQty = orders.reduce(
-    (s, i) => s + Number(i.Quantity || 0),
-    0
-  );
+const total = (Array.isArray(orders) ? orders : []).reduce(
+  (sum, item) => sum + Number(item.amount || 0),
+  0
+);
 
+const totalQty = (Array.isArray(orders) ? orders : []).reduce(
+  (sum, item) => sum + Number(item.Quantity || 0),
+  0
+);
   return (
 
     <div className="settlement-success-page">
@@ -122,7 +126,7 @@ const [tableId, setTableId] = useState("");
 
             <span>🍴</span>
 
-            <span>{orders.length} dishes</span>
+            <span>{Array.isArray(orders) ? orders.length : 0} dishes</span>
 
           </div>
 
@@ -139,7 +143,7 @@ const [tableId, setTableId] = useState("");
         {/* ORDER ITEMS */}
         <div className="settlement-items-list">
 
-          {orders.map((item, index) => (
+          {(Array.isArray(orders) ? orders : []).map((item, index) => (
 
             <div
               className="settlement-order-item"
