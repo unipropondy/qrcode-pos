@@ -17,9 +17,15 @@ const [tableId, setTableId] = useState("");
 
   const [tableNo, setTableNo] = useState("");
 
-  useEffect(() => {
+useEffect(() => {
+  loadOrderDetails();
+
+  const interval = setInterval(() => {
     loadOrderDetails();
-  }, []);
+  }, 5000); // 5 seconds
+
+  return () => clearInterval(interval);
+}, []);
 
   const loadOrderDetails = async () => {
 
@@ -91,21 +97,21 @@ const totalQty = (Array.isArray(orders) ? orders : []).reduce(
 
             <button
               className="settlement-home-btn"
-              onClick={() => {
-                navigate(`/?tableId=${tableId}&table=${tableNo}`);
-              }}
+             onClick={() => {
+              window.location.href = `/?tableId=${tableId}&table=${tableNo}`;
+            }}
             >
               🏠
             </button>
 
-            <button
+            {/* <button
               className="settlement-refresh-btn"
               onClick={() => {
                 loadOrderDetails();
               }}
             >
               ↻ Refresh
-            </button>
+            </button> */}
 
           </div>
 
