@@ -200,11 +200,16 @@ function App() {
     actionRef.current = "INSERT";
     setCart((prev) => {
 
-      const existing = prev.find(
-        (item) =>
-          (item.DishId || item.id) === dish.DishId
-      );
+      // const existing = prev.find(
+      //   (item) =>
+      //     (item.DishId || item.id) === dish.DishId
+      // );
 
+    const existing = prev.find(
+  (item) =>
+    (item.DishId || item.id) === dish.DishId &&
+    item.status !== "SENT"
+);
       // already exists
       if (existing) {
         return prev.map((item) =>
@@ -341,10 +346,11 @@ function App() {
     ).toFixed(2);
     
     console.log("Opening payment for amount:", totalAmount);
-    console.log("Order ID:", currentOrderId);
+    console.log("POS Order ID:", currentOrderId);
     
-    // Open YeahPay demo page with amount parameter
-    const demoUrl = `https://yeahpay-demo-production.up.railway.app?amount=${totalAmount}&orderId=${currentOrderId}&from=pos`;
+    // Pass the real POS orderId as posOrderId so we can use it on success
+    // (YeahPay generates its own orderId which does NOT match our DB OrderNumber)
+    const demoUrl = `https://yeahpay-demo-production.up.railway.app?amount=${totalAmount}&orderId=${currentOrderId}&posOrderId=${encodeURIComponent(currentOrderId)}&from=pos`;
     
     const paymentWindow = window.open(demoUrl, '_blank', 'width=500,height=700');
     
@@ -353,6 +359,9 @@ function App() {
         return;
     }
     
+    // Capture the POS orderId at time of opening (closure)
+    const posOrderIdAtOpen = currentOrderId;
+
     // Listen for payment success message
     const handleMessage = (event) => {
         if (event.data.type === 'YEAHPAY_PAYMENT_SUCCESS') {
@@ -361,8 +370,13 @@ function App() {
             // Remove event listener
             window.removeEventListener('message', handleMessage);
             
-            // Complete the order
-            completeOrder(event.data.orderId, totalAmount);
+            // Use the real POS orderId (posOrderId from event, or fallback to captured one)
+            // The YeahPay demo may send back posOrderId if it forwards it; otherwise use our captured value
+            const realPosOrderId = event.data.posOrderId || posOrderIdAtOpen;
+            console.log("Using POS OrderId for DB update:", realPosOrderId);
+
+            // Complete the order using the real POS orderId
+            completeOrder(realPosOrderId, totalAmount);
             
             // Close the payment window
             if (paymentWindow) paymentWindow.close();
@@ -412,17 +426,32 @@ function App() {
 //     }
 // };
 
-const completeOrder = async (orderId, amount) => {
+const completeOrder = async (posOrderId, amount) => {
   try {
 
-    // 1. SAVE SALES
+    console.log("[completeOrder] Using POS orderId:", posOrderId, "Amount:", amount);
+
+    // 1. UPDATE RestaurantOrderDetailCur StatusCode = 2 (SENT) for all items in this order
+    const markSentRes = await fetch(`${API}/order/mark-sent`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        orderId: posOrderId
+      })
+    });
+    const markSentData = await markSentRes.json();
+    console.log("[mark-sent] RestaurantOrderDetailCur StatusCode=2 update:", markSentData);
+
+    // 2. SAVE SALES
     const res = await fetch(`${API}/sales/save`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        orderId: orderId,
+        orderId: posOrderId,
         tableNo: tableNo,
         tableId: tableId,
         subTotal: parseFloat(amount),
@@ -438,7 +467,6 @@ const completeOrder = async (orderId, amount) => {
     });
 
     const data = await res.json();
-
     console.log("SALES SAVE:", data);
 
     if (!data.success) {
@@ -446,58 +474,31 @@ const completeOrder = async (orderId, amount) => {
       return;
     }
 
-    // 2. COMPLETE ORDER / FREE TABLE
-    // await fetch(`${API}/order/complete`, {
-    //   method: "POST",
-    //   headers: {
-    //     "Content-Type": "application/json"
-    //   },
-    //   body: JSON.stringify({
-    //     tableId: tableId,
-    //     userId: "00000000-0000-0000-0000-000000000000"
-    //   })
-    // });
-
-    await fetch(`${API}/order/mark-sent`, {
+    // 3. UPDATE TableMaster PAYMENT_STATUS = 1 (paid online)
+    await fetch(`${API}/order/payment-status`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        orderId: orderId
+        tableId: tableId,
+        paymentStatus: 1
       })
     });
 
-   await fetch(`${API}/order/payment-status`, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json"
-  },
-  body: JSON.stringify({
-    tableId: tableId,
-    paymentStatus: 1
-  })
-});
-
-    // 3. CLEAR CART
-    // setCart([]);
-
     // 4. SUCCESS MESSAGE
-
     setPaymentDone(true);
-
     handlePaymentSuccess(`Payment Successful! Amount: S$${amount}`);
 
     // 5. OPEN SETTLEMENT PAGE
     setTimeout(() => {
       window.location.href =
-        `/settlement-success?tableId=${tableId}&table=${tableNo}&orderId=${orderId}`;
+        `/settlement-success?tableId=${tableId}&table=${tableNo}&orderId=${posOrderId}`;
     }, 1000);
 
   } catch (err) {
 
     console.log("COMPLETE ORDER ERROR:", err);
-
     alert("Server Error: " + err.message);
   }
 };
@@ -692,6 +693,8 @@ const completeOrder = async (orderId, amount) => {
       const data = await res.json();
 
       console.log("LOAD CART:", data);
+
+      console.log("LOAD CART ITEMS:", JSON.stringify(data.items, null, 2));
 
       if (data.items) {
 
@@ -1111,11 +1114,14 @@ const completeOrder = async (orderId, amount) => {
                         <button
                           className="qty-btn"
                           onClick={() => decreaseQty(index)}
-                        disabled={
-                          (item.status && item.status === "SENT") ||
-                          isCartLoading
-                        }
-                          style={{ opacity: ((item.status && item.status !== "NEW") || isCartLoading) ? 0.5 : 1 }}
+                        // disabled={
+                        //   (item.status && item.status === "SENT") ||
+                        //   isCartLoading
+                        // }
+                          // style={{ opacity: ((item.status && item.status !== "NEW") || isCartLoading) ? 0.5 : 1 }}
+                          style={{
+                            opacity: 1
+                          }}
                         >
                           -
                         </button>
@@ -1127,11 +1133,14 @@ const completeOrder = async (orderId, amount) => {
                         <button
                           className="qty-btn"
                           onClick={() => increaseQty(index)}
-                       disabled={
-                        (item.status && item.status === "SENT") ||
-                        isCartLoading
-                      }
-                          style={{ opacity: ((item.status && item.status !== "NEW") || isCartLoading) ? 0.5 : 1 }}
+                      //  disabled={
+                      //   (item.status && item.status === "SENT") ||
+                      //   isCartLoading
+                      // }
+                          // style={{ opacity: ((item.status && item.status !== "NEW") || isCartLoading) ? 0.5 : 1 }}
+                          style={{
+                      opacity: 1
+                    }}
                         >
                           +
                         </button>

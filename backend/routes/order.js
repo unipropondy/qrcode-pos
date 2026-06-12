@@ -188,19 +188,41 @@ async function syncToProfessionalTables(transaction, tableId, displayOrderId, it
     const modsJSON = JSON.stringify(item.modifiers || []).substring(0, 500);
 
     // 🕵️‍♂️ SMART-MATCH: If ID is missing, try to find an existing item with same Dish & Modifiers
-    if (!lineItemId || lineItemId.length < 10) {
-      const matchCheck = await transaction.request()
-        .input("orderId", sql.UniqueIdentifier, orderGuid)
-        .input("dishId", sql.UniqueIdentifier, finalProdId)
-        .input("mods", sql.NVarChar(sql.MAX), modsJSON)
-        .query("SELECT TOP 1 OrderDetailId FROM RestaurantOrderDetailCur WHERE OrderId = @orderId AND DishId = @dishId AND CAST(ModifiersJSON AS NVARCHAR(MAX)) = LTRIM(RTRIM(@mods)) AND StatusCode <> 0 ORDER BY CreatedOn DESC");
+    // if (!lineItemId || lineItemId.length < 10) {
+    //   const matchCheck = await transaction.request()
+    //     .input("orderId", sql.UniqueIdentifier, orderGuid)
+    //     .input("dishId", sql.UniqueIdentifier, finalProdId)
+    //     .input("mods", sql.NVarChar(sql.MAX), modsJSON)
+    //     .query("SELECT TOP 1 OrderDetailId FROM RestaurantOrderDetailCur WHERE OrderId = @orderId AND DishId = @dishId AND CAST(ModifiersJSON AS NVARCHAR(MAX)) = LTRIM(RTRIM(@mods)) AND StatusCode <> 0 ORDER BY CreatedOn DESC");
       
-      if (matchCheck.recordset.length > 0) {
-        lineItemId = matchCheck.recordset[0].OrderDetailId;
-      } else {
-        lineItemId = require("crypto").randomUUID();
-      }
-    }
+    //   if (matchCheck.recordset.length > 0) {
+    //     lineItemId = matchCheck.recordset[0].OrderDetailId;
+    //   } else {
+    //     lineItemId = require("crypto").randomUUID();
+    //   }
+    // }
+
+    if (!lineItemId || lineItemId.length < 10) {
+  const matchCheck = await transaction.request()
+    .input("orderId", sql.UniqueIdentifier, orderGuid)
+    .input("dishId", sql.UniqueIdentifier, finalProdId)
+    .input("mods", sql.NVarChar(sql.MAX), modsJSON)
+    .query(`
+      SELECT TOP 1 OrderDetailId
+      FROM RestaurantOrderDetailCur
+      WHERE OrderId = @orderId
+        AND DishId = @dishId
+        AND CAST(ModifiersJSON AS NVARCHAR(MAX)) = LTRIM(RTRIM(@mods))
+        AND StatusCode = 1
+      ORDER BY CreatedOn DESC
+    `);
+
+  if (matchCheck.recordset.length > 0) {
+    lineItemId = matchCheck.recordset[0].OrderDetailId;
+  } else {
+    lineItemId = require("crypto").randomUUID();
+  }
+}
 
     const detailCheck = await transaction.request().input("detailId", sql.UniqueIdentifier, lineItemId).query("SELECT OrderDetailId FROM RestaurantOrderDetailCur WHERE OrderDetailId = @detailId");
     if (detailCheck.recordset.length > 0) {
@@ -501,6 +523,11 @@ router.post("/send", async (req, res) => {
   try {
     const { tableId, orderId, items, userId } = req.body;
 
+    console.log(
+  "SYNC ITEMS:",
+  JSON.stringify(items, null, 2)
+);
+console.log("SEND ITEMS RECEIVED:", JSON.stringify(items, null, 2));
 const pool = await poolPromise;
 
 let actualTableId = tableId;
@@ -655,25 +682,40 @@ router.get("/cart/:tableId", async (req, res) => {
       .input("orderNo", sql.NVarChar(50), isRealOrderId ? currentOrderId : "__NONE__")
       .query(`
         SELECT 
-          d.OrderDetailId as lineItemId, d.DishId as id, d.Quantity as qty, 
-          d.PricePerUnit as price, 
-          ISNULL(dish.Name, d.DishName) as name, 
-          d.ModifiersJSON, d.Remarks as note, d.isTakeAway as isTakeaway,
-          CASE d.StatusCode 
-            WHEN 1 THEN 'NEW' WHEN 2 THEN 'SENT' WHEN 3 THEN 'READY' 
-            WHEN 4 THEN 'SERVED' WHEN 5 THEN 'HOLD' WHEN 0 THEN 'VOIDED' 
-            ELSE 'SENT' 
-          END as status
-        FROM RestaurantOrderDetailCur d 
-        JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId 
-        LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
-        WHERE 
-          h.isOrderClosed = 0
-          AND (
-            h.OrderNumber = @orderNo
-            OR h.OrderId = (SELECT TOP 1 OrderId FROM RestaurantOrderCur WHERE Tableno = @tableNo AND isOrderClosed = 0 ORDER BY CreatedOn DESC)
-          )
-        ORDER BY d.CreatedOn ASC
+  d.OrderDetailId as lineItemId,
+  d.DishId as id,
+  d.Quantity as qty,
+  d.PricePerUnit as price,
+  ISNULL(dish.Name, d.DishName) as name,
+  d.ModifiersJSON,
+  d.Remarks as note,
+  d.isTakeAway as isTakeaway,
+  CASE d.StatusCode
+    WHEN 1 THEN 'NEW'
+    WHEN 2 THEN 'SENT'
+    WHEN 3 THEN 'READY'
+    WHEN 4 THEN 'SERVED'
+    WHEN 5 THEN 'HOLD'
+    WHEN 0 THEN 'VOIDED'
+    ELSE 'SENT'
+  END as status
+FROM RestaurantOrderDetailCur d
+JOIN RestaurantOrderCur h ON d.OrderId = h.OrderId
+LEFT JOIN DishMaster dish ON d.DishId = dish.DishId
+WHERE
+  h.isOrderClosed = 0
+  AND d.StatusCode = 1
+  AND (
+    h.OrderNumber = @orderNo
+    OR h.OrderId = (
+      SELECT TOP 1 OrderId
+      FROM RestaurantOrderCur
+      WHERE Tableno = @tableNo
+        AND isOrderClosed = 0
+      ORDER BY CreatedOn DESC
+    )
+  )
+ORDER BY d.CreatedOn ASC
       `);
 
     const items = result.recordset.map((i) => ({
