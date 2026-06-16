@@ -15,6 +15,13 @@ const UserIcon = () => (
   </svg>
 );
 
+const PhoneIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+  </svg>
+);
+
 const LockIcon = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
     stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -86,6 +93,7 @@ export default function LoginPage({ onLoginSuccess }) {
   // Sign Up fields
 
   const [suUsername, setSuUsername] = useState("");
+  const [suPhone, setSuPhone] = useState("");
   const [suPassword, setSuPassword] = useState("");
   const [suConfirm, setSuConfirm] = useState("");
 
@@ -137,6 +145,10 @@ export default function LoginPage({ onLoginSuccess }) {
       setError("Username and password are required.");
       return;
     }
+    if (!suPhone.trim()) {
+      setError("Phone number is required.");
+      return;
+    }
     if (suPassword !== suConfirm) {
       setError("Passwords do not match.");
       return;
@@ -154,6 +166,7 @@ export default function LoginPage({ onLoginSuccess }) {
           fullName: suUsername.trim(),
           username: suUsername.trim(),
           password: suPassword,
+          phone: suPhone.trim(),
         }),
       });
       const data = await res.json();
@@ -310,6 +323,22 @@ export default function LoginPage({ onLoginSuccess }) {
                   value={suUsername}
                   onChange={(e) => setSuUsername(e.target.value)}
                   autoComplete="username"
+                />
+              </div>
+            </div>
+
+            <div className="login-field">
+              <label className="login-label" htmlFor="su-phone">Phone Number *</label>
+              <div className="login-input-wrap">
+                <span className="login-input-icon"><PhoneIcon /></span>
+                <input
+                  id="su-phone"
+                  className="login-input"
+                  type="tel"
+                  placeholder="Enter phone number"
+                  value={suPhone}
+                  onChange={(e) => setSuPhone(e.target.value)}
+                  autoComplete="tel"
                 />
               </div>
             </div>

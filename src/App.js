@@ -1488,13 +1488,13 @@ const completeOrder = async (posOrderId, amount) => {
 
             </div>
 
-            <div className="payment-or">
+            {/* <div className="payment-or">
               OR
-            </div>
+            </div> */}
 
             <div className="payment-card">
 
-              <div className="card-top-section card-2-top">
+              {/* <div className="card-top-section card-2-top">
                 <div className="brand-grid full-grid">
                   <CashBrand />
                   <VoucherBrand />
@@ -1503,9 +1503,9 @@ const completeOrder = async (posOrderId, amount) => {
                   <PayNowBrand />
                   <VisaBrand />
                 </div>
-              </div>
+              </div> */}
 
-            <button
+          {/*  <button
   className="payment-btn"
   onClick={async () => {
      try {
@@ -1539,7 +1539,7 @@ const completeOrder = async (posOrderId, amount) => {
   }}
 >
   Pay At Cashier Now
-</button>
+</button>*/}
 
             </div>
 

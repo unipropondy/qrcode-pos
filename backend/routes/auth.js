@@ -45,6 +45,7 @@ router.post("/signup", async (req, res) => {
   try {
     const username = req.body.username?.trim();
     const password = req.body.password?.trim();
+    const phone = req.body.phone?.trim();
 
     if (!username || !password) {
       return res.status(400).json({ success: false, message: "Username and password are required" });
@@ -72,6 +73,27 @@ router.post("/signup", async (req, res) => {
       .query(`
         INSERT INTO USERMASTER (UserId, UserCode, UserName, UserPassword, IsDisabled)
         VALUES (@userId, @userCode, @username, @password, 0)
+      `);
+
+    const memberId = require("crypto").randomUUID();
+    await pool.request()
+      .input("memberId", sql.UniqueIdentifier, memberId)
+      .input("name", sql.NVarChar, username)
+      .input("phone", sql.NVarChar, phone || "")
+      .input("email", sql.NVarChar, "")
+      .input("creditLimit", sql.Decimal, 0)
+      .input("createdAt", sql.DateTime, new Date())
+      .input("address", sql.VarChar, "")
+      .input("isActive", sql.Bit, 1)
+      .input("balance", sql.Decimal, 0)
+      .input("currentBalance", sql.Decimal, 0)
+      .input("createdBy", sql.UniqueIdentifier, newUserId)
+      .input("modifiedBy", sql.UniqueIdentifier, newUserId)
+      .input("modifiedDate", sql.DateTime, new Date())
+      .input("lowBalanceAlertSent", sql.Bit, 0)
+      .query(`
+        INSERT INTO MemberMaster (MemberId, Name, Phone, Email, CreditLimit, CreatedAt, Address, IsActive, Balance, CurrentBalance, CreatedBy, ModifiedBy, ModifiedDate, LowBalanceAlertSent)
+        VALUES (@memberId, @name, @phone, @email, @creditLimit, @createdAt, @address, @isActive, @balance, @currentBalance, @createdBy, @modifiedBy, @modifiedDate, @lowBalanceAlertSent)
       `);
 
     const newUser = await pool.request()
