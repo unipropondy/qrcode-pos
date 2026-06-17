@@ -1218,12 +1218,24 @@ router.post("/payment-status", async (req, res) => {
       .input("tid", sql.UniqueIdentifier, cleanId)
       .input("pStatus", sql.Int, pStatus)
       .query(`
+        DECLARE @orderNo NVARCHAR(50);
+        SELECT @orderNo = CurrentOrderId FROM TableMaster WHERE TableId = @tid;
+
         UPDATE TableMaster
-       SET PAYMENT_STATUS = @pStatus,
-            Status = 1,
+        SET PAYMENT_STATUS = @pStatus,
+            Status = CASE WHEN @pStatus = 0 THEN 0 ELSE 1 END,
             entry_status = 'q',
+            CurrentOrderId = CASE WHEN @pStatus = 0 THEN NULL ELSE CurrentOrderId END,
+            StartTime = CASE WHEN @pStatus = 0 THEN NULL ELSE StartTime END,
             ModifiedOn = GETDATE()
-        WHERE TableId = @tid
+        WHERE TableId = @tid;
+
+        IF @pStatus = 0 AND @orderNo IS NOT NULL
+        BEGIN
+            UPDATE RestaurantOrderCur
+            SET isOrderClosed = 1
+            WHERE OrderNumber = @orderNo;
+        END
       `);
 
     res.json({
